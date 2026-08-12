@@ -1,3 +1,1 @@
-*.el linguist-language=Text
-*.el linguist-vendored
-*.el linguist-documentation
+*.el linguist-detectable=false
