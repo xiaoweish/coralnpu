@@ -1,72 +1,56 @@
 `ifndef HDL_VERILOG_RVV_DESIGN_RVV_DEFINE_SVH
 `define HDL_VERILOG_RVV_DESIGN_RVV_DEFINE_SVH
 
-`ifndef RVV_CONFIG_SVH
-`include "rvv_backend_config.svh"
-`endif
-
 // number of scalar core issue lane
 `define ISSUE_LANE              4
 
-// the max number of instructions are decoded per cycle in DE stage
-`define NUM_DE_INST             2
-
 // multi-issue and multi-read-ports of VRF
-`ifdef ISSUE_3_READ_PORT_6
+`ifdef DISPATCH3
+  // the max number of instructions are decoded per cycle in DE stage
+  `define NUM_DE_INST           3'd2
   // the max number of uops are written to Uops Queue per cycle in DE stage
   `define NUM_DE_UOP            6
-  `define NUM_DE_UOP_WIDTH      3
   // the max number of uops are dispated per cycle in DP stage.
   `define NUM_DP_UOP            3
   // the number of read ports for VRF
   `define NUM_DP_VRF            6
 
   // the depth of queue/station/buffer
-  `define CQ_DEPTH              16
+  `define CQ_DEPTH              8
+  `define LCQ_DEPTH             8
   `define UQ_DEPTH              16
   `define ALU_RS_DEPTH          8
-  `define PMTRDT_RS_DEPTH       8
+  `define PMTRDT_RS_DEPTH       4
   `define MUL_RS_DEPTH          8
-  `define DIV_RS_DEPTH          8
-  `define LSU_RS_DEPTH          8
-  `define ROB_DEPTH             8
-
-`elsif ISSUE_2_READ_PORT_6
-  // the max number of uops are written to Uops Queue per cycle in DE stage
-  `define NUM_DE_UOP            4
-  `define NUM_DE_UOP_WIDTH      3
-  // the max number of uops are dispated per cycle in DP stage
-  `define NUM_DP_UOP            2
-  // the number of read ports for VRF
-  `define NUM_DP_VRF            6
-
-  // the depth of queue/station/buffer
-  `define CQ_DEPTH              16
-  `define UQ_DEPTH              16
-  `define ALU_RS_DEPTH          4
-  `define PMTRDT_RS_DEPTH       8
-  `define MUL_RS_DEPTH          4
   `define DIV_RS_DEPTH          4
+  `define FALU_RS_DEPTH         8
+  `define FRDT_RS_DEPTH         4
   `define LSU_RS_DEPTH          4
-  `define ROB_DEPTH             8
+  `define LSUMAP_DEPTH          8
+  `define ROB_DEPTH             16
 
-`else  //ISSUE_2_READ_PORT_4
+`else  // DISPATCH2
+  // the max number of instructions are decoded per cycle in DE stage
+  `define NUM_DE_INST           3'd2
   // the max number of uops are written to Uops Queue per cycle in DE stage
   `define NUM_DE_UOP            4
-  `define NUM_DE_UOP_WIDTH      3
   // the max number of uops are dispated per cycle in DP stage
   `define NUM_DP_UOP            2
   // the number of read ports for VRF
   `define NUM_DP_VRF            4
 
   // the depth of queue/station/buffer
-  `define CQ_DEPTH              16
+  `define CQ_DEPTH              8
+  `define LCQ_DEPTH             8
   `define UQ_DEPTH              16
   `define ALU_RS_DEPTH          4
   `define PMTRDT_RS_DEPTH       8
   `define MUL_RS_DEPTH          4
   `define DIV_RS_DEPTH          4
+  `define FALU_RS_DEPTH         4
+  `define FRDT_RS_DEPTH         4
   `define LSU_RS_DEPTH          4
+  `define LSUMAP_DEPTH          8
   `define ROB_DEPTH             8
 `endif
 
@@ -82,23 +66,57 @@
 `define NUM_MUL                 2
 `define NUM_PMTRDT              1
 `define NUM_DIV                 1
-`define NUM_PU                  `NUM_ALU+`NUM_PMTRDT+`NUM_MUL+`NUM_DIV+`NUM_LSU
- 
-// Reservation Station data width
-`define ALU_RS_WIDTH            $bits(ALU_RS_t)
 
-// the max number of uops are retired per cycle in RT stage
-`define NUM_RT_UOP              4
+`ifdef ZVE32F_ON
+  `define NUM_FALU              2
+  `define NUM_FRDT              1
+  `define NUM_FDIV              1
+  `define NUM_FSUB              4
+`else
+  `define NUM_FALU              0
+  `define NUM_FRDT              0
+  `define NUM_FDIV              0
+  `define NUM_FSUB              0
+`endif
+
+`ifdef ZVT_ON
+  `define NUM_VME               1
+`else
+  `define NUM_VME               0
+`endif
+
+`define NUM_ARI               (`NUM_ALU+`NUM_PMTRDT+`NUM_MUL+`NUM_DIV+`NUM_FALU+`NUM_VME)
+`define NUM_PU                (`NUM_ARI+`NUM_LSU)
+
+`ifdef ARBITER_ON
+`define NUM_SMPORT              4
+`else
+`define NUM_SMPORT              (`NUM_PU)
+`endif
 
 `define ROB_DEPTH_WIDTH         $clog2(`ROB_DEPTH)
-
+`define NUM_RT_UOP              4
 `define PC_WIDTH                32
 `define XLEN                    32
+`define FLEN                    32
 `define BYTE_WIDTH              8
 `define HWORD_WIDTH             16
 `define WORD_WIDTH              32
-
 `define EMUL_MAX                8
+
+`ifdef ZVE32F_ON
+  `define LAST_UOP_VLD        1
+  `ifdef TB_SUPPORT
+    `define FP_RDT_TAG_WIDTH  (`LAST_UOP_VLD+`PC_WIDTH+`ROB_DEPTH_WIDTH)
+  `else
+    `define FP_RDT_TAG_WIDTH  (`LAST_UOP_VLD+`ROB_DEPTH_WIDTH)
+  `endif
+`else
+  // Define FP variables even if not used
+  // TODO(derekjchow): Remove FP modules from chisel build once float is
+  // configurable.
+  `define FP_RDT_TAG_WIDTH    0
+`endif
 
 // ALU instruction will be split 8 uops at most
 `define UOP_NUM_ALU             8
@@ -111,13 +129,23 @@
 // max(`UOP_INDEX_WIDTH_ALU,`UOP_INDEX_WIDTH_LSU)
 `define UOP_INDEX_WIDTH         5
 
-// ALU instruction will be split 8 uops at most
-`define UOP_NUM_ALU             8
-`define UOP_INDEX_WIDTH_ALU     $clog2(`UOP_NUM_ALU)
-
-// Vector CSR
+// Vector 
+`ifdef VLEN_128
 `define VLEN                    128
-`define VLENB                   (`VLEN/8)
+`endif
+`ifdef VLEN_256
+`define VLEN                    256
+`endif
+`ifdef VLEN_512
+`define VLEN                    512
+`endif
+`ifdef VLEN_1024
+`define VLEN                    1024
+`endif
+
+`define VLENB                   (`VLEN/`BYTE_WIDTH)
+`define VLENH                   (`VLEN/`HWORD_WIDTH)
+`define VLENW                   (`VLEN/`WORD_WIDTH)
 // VLMAX = VLEN*LMUL/SEW
 // vstart < VLMAX_max and vl <= VLMAX_max, VLMAX_max=VLEN*LMUL_max(8)/SEW_min(8)=VLEN
 `define VLMAX_MAX               `VLEN
@@ -145,4 +173,39 @@
 // V0 mask regsiter index
 `define V0_INDEX                5'b00000
 
-`endif  // HDL_VERILOG_RVV_DESIGN_RVV_DEFINE_SVH
+// ZVT
+`ifdef ZVT_ON
+  `define ZVT_RS_DEPTH        (`ZVT_LMUL*2)
+  
+  `define NUM_ACC             16
+  // 16 byte each subtile
+  `define SUBTILE_SIZE        16
+  `define NUM_BLK             4
+  
+  `define TE                  (`VLEN/8)
+
+  `ifdef ZVT_MAXCOMPUTING
+  `define COMPRATIO           1/4
+  `else       
+  `define COMPRATIO           4/`TE
+  `endif 
+
+  `ifdef ZVT_MAXCOMPUTING
+  `define PROCESS_DELAY       4
+  `define NUM_PE              (`TE*`TE/4)
+  `else
+  `define PROCESS_DELAY       (`TE/4)
+  `define NUM_PE              (4*`TE)
+  `endif
+  `define ZVT_LMUL            (`WORD_WIDTH*`TE/`VLEN)
+  // The quantity of subtile for each acc
+  `define NUM_SUBTILE         (`TE*`TE/`SUBTILE_SIZE)
+  // The quantity of subtile ports for each block
+  `ifdef ZVT_MAXCOMPUTING
+  `define NUM_BLKPORT         (((`TE + 15) / 16) * `TE/4)
+  `else
+  `define NUM_BLKPORT         (`TE/4)
+  `endif
+`endif // ZVT_ON
+
+`endif // HDL_VERILOG_RVV_DESIGN_RVV_DEFINE_SVH

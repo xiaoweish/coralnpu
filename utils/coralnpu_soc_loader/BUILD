@@ -26,6 +26,7 @@ py_library(
 py_binary(
     name = "loader",
     srcs = ["loader.py"],
+    imports = ["."],
     deps = [
         ":spi_driver",
         "//coralnpu_test_utils:spi_constants",
@@ -39,9 +40,64 @@ py_binary(
     srcs = ["run_simulation.py"],
     data = [
         ":loader",
+        "//coralnpu_test_utils:run_sram_test",
         "//fpga:copy_chip_verilator_binary",
     ],
     tags = ["manual"],
+    deps = [
+        "@bazel_tools//tools/python/runfiles",
+    ],
+)
+
+# Test runner for automated SoC simulation tests.
+py_binary(
+    name = "sim_test_runner",
+    srcs = ["sim_test_runner.py"],
+    data = [
+        ":loader",
+        "//coralnpu_test_utils:run_sram_test",
+        "//fpga:copy_chip_verilator_binary",
+        "//fpga/ip/ispyocto:grey_bars_320x240.raw",
+    ],
+    main = "sim_test_runner.py",
+    tags = ["manual"],
+    deps = [
+        "@bazel_tools//tools/python/runfiles",
+    ],
+)
+
+py_binary(
+    name = "sim_test_runner_highmem",
+    srcs = ["sim_test_runner.py"],
+    data = [
+        ":loader",
+        "//coralnpu_test_utils:run_sram_test",
+        "//fpga:copy_chip_verilator_highmem_binary",
+        "//fpga/ip/ispyocto:grey_bars_320x240.raw",
+    ],
+    main = "sim_test_runner.py",
+    tags = ["manual"],
+    deps = [
+        "@bazel_tools//tools/python/runfiles",
+    ],
+)
+
+py_binary(
+    name = "run_isp_cam_sim",
+    srcs = ["run_simulation.py"],
+    args = [
+        "--elf_file",
+        "$(location //fpga:isp_cam_test.elf)",
+        "--run_time",
+        "100",
+    ],
+    data = [
+        ":loader",
+        "//fpga:copy_chip_verilator_binary",
+        "//fpga:isp_cam_test.elf",
+        "//fpga/ip/ispyocto:grey_bars_320x240.raw",
+    ],
+    main = "run_simulation.py",
     deps = [
         "@bazel_tools//tools/python/runfiles",
     ],

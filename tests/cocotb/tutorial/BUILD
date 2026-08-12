@@ -13,7 +13,7 @@
 # limitations under the License.
 
 load("//rules:coco_tb.bzl", "cocotb_test_suite")
-load("//rules:coralnpu_v2.bzl", "coralnpu_v2_binary")
+load("//rules:coralnpu_v2.bzl", "collect_coralnpu_elfs", "coralnpu_v2_binary")
 load("//rules:utils.bzl", "generate_cc_arrays")
 load(
     "//tests/cocotb:build_defs.bzl",
@@ -57,7 +57,7 @@ cocotb_test_suite(
     vcs_build_args = VCS_BUILD_ARGS,
     vcs_data = [
         ":coralnpu_v2_program",
-        "//tests/cocotb:coverage_exclude.cfg",
+        "//hdl/verilog:dpi_files",
     ],
     vcs_defines = VCS_DEFINES,
     vcs_test_args = VCS_TEST_ARGS,
@@ -88,7 +88,7 @@ cocotb_test_suite(
     vcs_build_args = VCS_BUILD_ARGS,
     vcs_data = [
         "//examples:coralnpu_v2_hello_world_add_floats.elf",
-        "//tests/cocotb:coverage_exclude.cfg",
+        "//hdl/verilog:dpi_files",
     ],
     vcs_defines = VCS_DEFINES,
     vcs_test_args = VCS_TEST_ARGS,
@@ -99,6 +99,7 @@ cocotb_test_suite(
 coralnpu_v2_binary(
     name = "coralnpu_v2_program",
     srcs = ["program.cc"],
+    visibility = ["//visibility:public"],
 )
 
 coralnpu_v2_binary(
@@ -108,8 +109,8 @@ coralnpu_v2_binary(
         "tflite_micro_test.cc",
     ],
     hdrs = ["hello_world_tflite.h"],
-    itcm_size_kbytes = 1024,  # Highmem
     dtcm_size_kbytes = 1024,  # Highmem
+    itcm_size_kbytes = 1024,  # Highmem
     deps = [
         "@tflite_micro//tensorflow/lite/micro:micro_framework",
         "@tflite_micro//tensorflow/lite/micro:micro_log",
@@ -130,3 +131,5 @@ generate_cc_arrays(
     src = "@tflite_micro//tensorflow/lite/micro/examples/hello_world/models:hello_world_int8.tflite",
     out = "hello_world_tflite.h",
 )
+
+collect_coralnpu_elfs()

@@ -184,7 +184,11 @@ task rvs_monitor::tx_monitor();
               2'b10: inst_32[6:0] = 7'b101_0111; // ARI
             endcase
             inst_tr.bin2tr(inst_32, rvs_if.insts_rvs2cq[i].rs1);
+`ifdef TB_SUPPORT
             inst_tr.pc = rvs_if.insts_rvs2cq[i].inst_pc;
+`else
+            inst_tr.pc = '0;
+`endif
 
             if(is_active) begin
               inst_tr.is_last_inst = inst_tx_queue[0].is_last_inst;
@@ -260,7 +264,11 @@ task rvs_monitor::rx_monitor();
             2'b10: inst_32[6:0] = 7'b101_0111; // ARI
           endcase
           inst_tr.bin2tr(inst_32, rvs_if.inst_pkg_cq2de[i].rs1);
+`ifdef TB_SUPPORT
           inst_tr.pc = rvs_if.insts_rvs2cq[i].inst_pc;
+`else
+          inst_tr.pc = '0;
+`endif
           foreach(inst_rx_queue[idx]) begin
             if(inst_rx_queue[idx].compare_inst(inst_tr)) begin
               `uvm_info(get_type_name(), $sformatf("DUT discarded inst:\n%s", inst_rx_queue[idx].sprint()), UVM_HIGH)

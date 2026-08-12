@@ -28,22 +28,32 @@ chisel_library(
 )
 
 chisel_library(
+    name = "index_allocator",
+    srcs = ["IndexAllocator.scala"],
+    visibility = ["//visibility:public"],
+    deps = [":library"],
+)
+
+chisel_library(
     name = "common",
     srcs = [
+        "CoralNPUArbiter.scala",
         "Fifo.scala",
         "FifoIxO.scala",
         "FifoX.scala",
         "FifoXe.scala",
         "IDiv.scala",
-        "CoralNPUArbiter.scala",
         "MathUtil.scala",
+        "Router.scala",
         "Slice.scala",
     ],
     visibility = ["//visibility:public"],
     exports = [
+        ":index_allocator",
         ":library",
     ],
     deps = [
+        ":index_allocator",
         ":library",
         "@chipsalliance_rocket_chip//:asyncqueue",
     ],
@@ -136,6 +146,7 @@ chisel_test(
     name = "common_test",
     srcs = [
         "CoralNPUArbiterTest.scala",
+        "RouterTest.scala",
     ],
     deps = [
         ":common",
@@ -165,6 +176,7 @@ chisel_test(
 
 chisel_test(
     name = "circular_buffer_multi_test",
+    size = "large",
     srcs = [
         "CircularBufferMultiTest.scala",
     ],
@@ -175,6 +187,7 @@ chisel_test(
 
 chisel_test(
     name = "library_test",
+    size = "large",
     srcs = [
         "LibraryTest.scala",
     ],
@@ -184,10 +197,21 @@ chisel_test(
 )
 
 chisel_test(
-    name = "scatter_gather_test",
+    name = "gather_test",
     size = "large",
     srcs = [
-        "ScatterGatherTest.scala",
+        "GatherSpec.scala",
+    ],
+    deps = [
+        ":scatter_gather",
+    ],
+)
+
+chisel_test(
+    name = "scatter_test",
+    size = "large",
+    srcs = [
+        "ScatterSpec.scala",
     ],
     deps = [
         ":scatter_gather",
@@ -243,5 +267,37 @@ chisel_test(
     deps = [
         ":common",
         "@chipsalliance_rocket_chip//:asyncqueue",
+    ],
+)
+
+chisel_test(
+    name = "index_allocator_test",
+    srcs = [
+        "IndexAllocatorTest.scala",
+    ],
+    deps = [
+        ":index_allocator",
+    ],
+)
+
+chisel_library(
+    name = "fifo_state",
+    srcs = [
+        "FIFOState.scala",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":library",
+    ],
+)
+
+chisel_test(
+    name = "fifo_state_test",
+    size = "large",
+    srcs = [
+        "FIFOStateTest.scala",
+    ],
+    deps = [
+        ":fifo_state",
     ],
 )

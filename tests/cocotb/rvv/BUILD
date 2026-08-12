@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//rules:coralnpu_v2.bzl", "coralnpu_v2_binary")
+load("//rules:coralnpu_v2.bzl", "collect_coralnpu_elfs", "coralnpu_v2_binary")
 load("//rules:utils.bzl", "template_rule")
 
 package(default_visibility = ["//visibility:public"])
@@ -40,6 +40,9 @@ template_rule(
         },
         "vfirst_test": {
             "srcs": ["vfirst_test.cc"],
+        },
+        "vgather": {
+            "srcs": ["vgather.cc"],
         },
         "vill_test": {
             "srcs": ["vill_test.cc"],
@@ -78,6 +81,7 @@ filegroup(
         "vcpop_test.elf",
         "vcsr_test.elf",
         "vfirst_test.elf",
+        "vgather.elf",
         "vill_test.elf",
         "viota_test.elf",
         "vmsbf_test.elf",
@@ -88,3 +92,5 @@ filegroup(
         "vstart_store.elf",
     ],
 )
+
+collect_coralnpu_elfs()

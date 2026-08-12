@@ -36,9 +36,10 @@ filegroup(
     srcs = glob(["cocotb/share/lib/verilator/*.cpp"]),
 )
 filegroup(
-    name = "verilator_libs",
+    name = "cocotb_libs",
     srcs = glob(["cocotb/libs/*.so"]),
 )
+
 """.format(pypi_name = pypi_name, pypi_version = pypi_version, deps = deps)
 
 def install_deps():
@@ -87,6 +88,16 @@ def install_deps():
         sha256 = "a7b2f9a18b5ff9824a6af80de4f37f4ec3c2aab05ef08f51c77a093f5b89adda",
         type = "zip",
         build_file_content = _build_file_content(pypi_name = "numpy", pypi_version = "2.0.0"),
+    )
+
+    http_archive(
+        name = "coralnpu_pip_deps_ml_dtypes",
+        urls = [
+            "https://files.pythonhosted.org/packages/a9/80/19189ea605017473660e43762dc853d2797984b3c7bf30ce656099add30c/ml_dtypes-0.5.4-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        ],
+        sha256 = "19b9a53598f21e453ea2fbda8aa783c20faff8e1eeb0d7ab899309a0053f1483",
+        type = "zip",
+        build_file_content = _build_file_content(pypi_name = "ml_dtypes", pypi_version = "0.5.4", deps = ["@coralnpu_pip_deps_numpy//:pkg"]),
     )
 
     http_archive(
@@ -427,4 +438,14 @@ def install_deps():
                 "@coralnpu_pip_deps_pyusb//:pkg",
             ],
         ),
+    )
+
+    http_archive(
+        name = "coralnpu_pip_deps_pillow",
+        urls = [
+            "https://files.pythonhosted.org/packages/5c/1f/8e66ab9be3aaf1435bc03edd1ebdf58ffcd17f7349c1d970cafe87af27d9/pillow-12.1.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        ],
+        sha256 = "1f345e7bc9d7f368887c712aa5054558bad44d2a301ddf9248599f4161abc7c0",
+        type = "zip",
+        build_file_content = _build_file_content(pypi_name = "Pillow", pypi_version = "12.1.0"),
     )

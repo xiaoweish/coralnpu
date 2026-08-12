@@ -20,7 +20,6 @@ load("@rules_hdl//verilog:providers.bzl", "verilog_library")
 
 SCALA_COPTS = [
     "-Ymacro-annotations",
-    "-Xplugin:$(execpath @org_chipsalliance_chisel_plugin//jar)",
     "-explaintypes",
     "-feature",
     "-language:reflectiveCalls",
@@ -39,7 +38,8 @@ def chisel_library(
         resources = [],
         resource_strip_prefix = "",
         visibility = None,
-        allow_warnings = False):
+        allow_warnings = False,
+        scalacopts = []):
     warn_opts = []
     if not allow_warnings:
         warn_opts += ["-Xfatal-warnings"]
@@ -48,12 +48,15 @@ def chisel_library(
         srcs = srcs,
         deps = [
             "@coralnpu_hw//lib:chisel_lib",
-            "@org_chipsalliance_chisel_plugin//jar",
+            "@coralnpu_maven//:org_chipsalliance_chisel_plugin_2_13_6",
         ] + deps,
+        plugins = [
+            "@coralnpu_maven//:org_chipsalliance_chisel_plugin_2_13_6",
+        ],
         resources = resources,
         resource_strip_prefix = resource_strip_prefix,
         exports = exports,
-        scalacopts = SCALA_COPTS + warn_opts,
+        scalacopts = SCALA_COPTS + warn_opts + scalacopts,
         visibility = visibility,
     )
 
@@ -69,8 +72,15 @@ def chisel_binary(
         main_class = main_class,
         deps = [
             "@coralnpu_hw//lib:chisel_lib",
-            "@org_chipsalliance_chisel_plugin//jar",
+            "@coralnpu_maven//:org_chipsalliance_chisel_plugin_2_13_6",
+            "@coralnpu_hw//lib:common_cells_resources",
+            "@coralnpu_hw//lib:cvfpu_resources",
+            "@coralnpu_hw//lib:fpu_div_sqrt_mvp_resources",
+            "@coralnpu_hw//lib:rvvi_resources",
         ] + deps,
+        plugins = [
+            "@coralnpu_maven//:org_chipsalliance_chisel_plugin_2_13_6",
+        ],
         scalacopts = SCALA_COPTS,
         visibility = visibility,
     )
@@ -89,12 +99,15 @@ def chisel_test(
         srcs = srcs,
         deps = [
             "@coralnpu_hw//lib:chisel_lib",
-            "@org_chipsalliance_chisel_plugin//jar",
-            "@org_scalatest_scalatest//jar",
-            "@edu_berkeley_cs_firrtl//jar",
-            "@org_antlr_antlr4_runtime//jar",
-            "@net_java_dev_jna//jar",
+            "@coralnpu_maven//:org_chipsalliance_chisel_plugin_2_13_6",
+            "@coralnpu_maven//:org_scalatest_scalatest_2_13",
+            "@coralnpu_maven//:edu_berkeley_cs_firrtl_2_13",
+            "@coralnpu_maven//:org_antlr_antlr4_runtime",
+            "@coralnpu_maven//:net_java_dev_jna_jna",
         ] + deps,
+        plugins = [
+            "@coralnpu_maven//:org_chipsalliance_chisel_plugin_2_13_6",
+        ],
         data = [
             "@coralnpu_hw//third_party/llvm-firtool:firtool",
         ],

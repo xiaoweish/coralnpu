@@ -12,10 +12,14 @@ filesets:
       - lowrisc:prim:rom_adv
       - lowrisc:prim_generic:rom
       - lowrisc:tlul:adapter_sram
-      - coralnpuv2:ip:sram:0.1
       - coralnpuv2:ip:coralnpu_tlul:0.1
+      - coralnpuv2:ip:i2c_master:0.1
+      - vsi:ip:ispyocto:0.1
+      - google:ip:tlul2ahblite:0.1
     files:
       - rtl/coralnpu_soc.sv
+      - rtl/clk_table.sv
+      - rtl/autoboot.sv
     file_type: systemVerilogSource
 
   sim_src:
@@ -33,12 +37,27 @@ parameters:
   ClockFrequencyMhz:
     datatype: int
     description: "Target clock frequency in MHz."
-    default: 80
+    default: 50
+    paramtype: vlogparam
+  IspClockFrequencyMhz:
+    datatype: int
+    description: "ISP clock frequency in MHz."
+    default: 10
+    paramtype: vlogparam
+  SpimClockFrequencyMhz:
+    datatype: int
+    description: "SPIM clock frequency in MHz."
+    default: 100
     paramtype: vlogparam
   MemInitFile:
     datatype: str
     description: Path to ROM
     default: ""
+    paramtype: vlogparam
+  EnableAutoboot:
+    datatype: int
+    description: "Enable autonomous boot release"
+    default: 0
     paramtype: vlogparam
   USE_GENERIC:
     datatype: bool
@@ -49,6 +68,21 @@ parameters:
     datatype: bool
     description: "Use Xilinx FPGA primitives"
     default: false
+    paramtype: vlogdefine
+  TB_SUPPORT:
+    datatype: bool
+    description: "Enable TB support in RVV"
+    default: true
+    paramtype: vlogdefine
+  VLEN_128:
+    datatype: bool
+    description: "Set RVV VLEN to 128"
+    default: true
+    paramtype: vlogdefine
+  ZVE32F_ON:
+    datatype: bool
+    description: "Enable ZVE32F RVV profile"
+    default: true
     paramtype: vlogdefine
 
 targets:
@@ -64,6 +98,9 @@ targets:
     default_tool: verilator
     description: "Simulation target for the CoralNPU SoC"
     parameters:
+      - ClockFrequencyMhz
+      - IspClockFrequencyMhz
+      - SpimClockFrequencyMhz
       - MemInitFile
     tools:
       verilator:
@@ -71,10 +108,9 @@ targets:
         verilator_options:
           - '--trace'
           - '--trace-fst'
-          - '-CFLAGS "-DTOPLEVEL_NAME=coralnpu_soc -std=c++17 -Wall -DVM_TRACE_FMT_FST"'
+          - '-CFLAGS "-DTOPLEVEL_NAME=coralnpu_soc -Wall -DVM_TRACE_FMT_FST"'
           - '-LDFLAGS "-lelf"'
           - '-Wall'
-          - '--threads 16'
           - '-Wno-fatal'
 
   synth:
@@ -83,9 +119,15 @@ targets:
     filesets:
       - rtl
     parameters:
+      - ClockFrequencyMhz
+      - IspClockFrequencyMhz
+      - SpimClockFrequencyMhz
       - MemInitFile
       - USE_GENERIC=true
       - FPGA_XILINX=true
+      - TB_SUPPORT=true
+      - VLEN_128=true
+      - ZVE32F_ON=true
     tools:
       vivado:
         part: "xcvu13p-fhga2104-2-e"

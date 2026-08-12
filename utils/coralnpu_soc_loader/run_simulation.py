@@ -23,7 +23,6 @@ import sys
 import threading
 import time
 
-
 from bazel_tools.tools.python.runfiles import runfiles
 
 
@@ -47,13 +46,59 @@ def stream_reader(pipe, prefix, ready_event=None, ready_line=None):
 
 def main():
     """The main entry point for the script."""
-    parser = argparse.ArgumentParser(description="Run the CoralNPU SoC simulation and load an ELF binary.")
-    parser.add_argument("--elf_file", required=True, help="Path to the ELF binary to load.")
-    parser.add_argument("--trace_file", help="Optional: Path to save a waveform trace file (.fst).")
-    parser.add_argument("--run_time", type=int, default=10, help="Optional: Time in seconds to run simulation after loading.")
+    parser = argparse.ArgumentParser(
+        description="Run the CoralNPU SoC simulation and load an ELF binary."
+    )
+    parser.add_argument(
+        "--elf_file",
+        help=
+        "Path to the ELF binary to load. If not provided, simulation runs without loading code."
+    )
+    parser.add_argument(
+        "--command",
+        help=
+        "Optional: A command string to run once the simulation is ready. If provided, overrides --elf_file."
+    )
+    parser.add_argument(
+        "--trace",
+        nargs="?",
+        const="sim_trace.fst",
+        help=
+        "Optional: Path to save a waveform trace file (.fst). Defaults to sim_trace.fst if no path is provided."
+    )
+    parser.add_argument(
+        "--trace_file",
+        help=
+        "Deprecated: use --trace instead. Path to save a waveform trace file (.fst)."
+    )
+    parser.add_argument(
+        "--run_time",
+        type=int,
+        default=10,
+        help="Optional: Time in seconds to run simulation after loading."
+    )
+    parser.add_argument(
+        "--spi_port", type=int, help="Optional: TCP port for SPI DPI server."
+    )
     args = parser.parse_args()
 
     r = runfiles.Create()
+
+    # Ensure required data files are in Current working directory
+    raw_image_path = r.Rlocation(
+        "coralnpu_hw/fpga/ip/ispyocto/grey_bars_320x240.raw"
+    )
+    linked_raw = False
+    if raw_image_path and os.path.exists(raw_image_path):
+        if not os.path.exists("grey_bars_320x240.raw"):
+            try:
+                os.symlink(raw_image_path, "grey_bars_320x240.raw")
+                linked_raw = True
+                logging.warning(
+                    "RUNNER: Linked grey_bars_320x240.raw to current directory."
+                )
+            except OSError:
+                pass
     # The genrule copies the binary to a predictable path.
     sim_bin_path = r.Rlocation("coralnpu_hw/fpga/Vchip_verilator")
     if not sim_bin_path or not os.path.exists(sim_bin_path):
@@ -62,10 +107,15 @@ def main():
         long_path = "coralnpu_hw/fpga/build_chip_verilator/com.google.coralnpu_fpga_chip_verilator_0.1/sim-verilator/Vchip_verilator"
         sim_bin_path = r.Rlocation(long_path)
         if not sim_bin_path or not os.path.exists(sim_bin_path):
-            raise FileNotFoundError(f"Could not find simulator binary in runfiles at default or fallback paths.")
+            raise FileNotFoundError(
+                f"Could not find simulator binary in runfiles at default or fallback paths."
+            )
 
-    port = find_free_port()
-    logging.warning(f"RUNNER: Found free TCP port: {port}")
+    if args.spi_port:
+        port = args.spi_port
+    else:
+        port = find_free_port()
+    logging.warning(f"RUNNER: Using TCP port: {port}")
 
     sim_env = os.environ.copy()
     sim_env["SPI_DPI_PORT"] = str(port)
@@ -76,9 +126,18 @@ def main():
 
     try:
         sim_cmd = [sim_bin_path]
-        if args.trace_file:
-            sim_cmd.append(f"--trace={args.trace_file}")
-            logging.warning(f"RUNNER: Tracing enabled, waveform will be saved to {args.trace_file}")
+        trace_file = args.trace or args.trace_file
+        if trace_file:
+            # If relative, save it to the workspace directory to ensure it doesn't get buried in runfiles.
+            if not os.path.isabs(
+                    trace_file) and "BUILD_WORKSPACE_DIRECTORY" in os.environ:
+                trace_file = os.path.join(
+                    os.environ["BUILD_WORKSPACE_DIRECTORY"], trace_file
+                )
+            sim_cmd.append(f"--trace={trace_file}")
+            logging.warning(
+                f"RUNNER: Tracing enabled, waveform will be saved to {trace_file}"
+            )
 
         logging.warning(f"RUNNER: Starting simulation: {' '.join(sim_cmd)}")
         sim_proc = subprocess.Popen(
@@ -92,42 +151,114 @@ def main():
         sim_ready_event = threading.Event()
 
         # Start threads to monitor simulator output
-        threads.append(threading.Thread(target=stream_reader, args=(sim_proc.stdout, "SIM", sim_ready_event, f"DPI: Server listening on port {port}")))
-        threads.append(threading.Thread(target=stream_reader, args=(sim_proc.stderr, "SIM_ERR")))
+        threads.append(
+            threading.Thread(
+                target=stream_reader,
+                args=(
+                    sim_proc.stdout, "SIM", sim_ready_event,
+                    f"DPI: Server listening on port {port}"
+                )
+            )
+        )
+        threads.append(
+            threading.Thread(
+                target=stream_reader, args=(sim_proc.stderr, "SIM_ERR")
+            )
+        )
         for t in threads:
             t.start()
 
         logging.warning("RUNNER: Waiting for simulation to be ready...")
         if not sim_ready_event.wait(timeout=60):
-            raise RuntimeError("Timeout waiting for simulator to become ready.")
+            raise RuntimeError(
+                "Timeout waiting for simulator to become ready."
+            )
         logging.warning("RUNNER: Simulation is ready.")
 
-        loader_script_path = r.Rlocation("coralnpu_hw/utils/coralnpu_soc_loader/loader")
-        if not loader_script_path or not os.path.exists(loader_script_path):
-            raise FileNotFoundError("Could not find loader binary in runfiles.")
+        if args.command:
+            import shlex
+            cmd = shlex.split(args.command)
+            # Try to resolve first element as a runfile if it looks like a workspace path
+            if cmd[0].startswith("coralnpu_hw/"):
+                resolved = r.Rlocation(cmd[0])
+                if resolved:
+                    cmd[0] = resolved
 
-        logging.warning(f"RUNNER: Starting ELF loader: {loader_script_path}")
-        loader_proc = subprocess.Popen(
-            [loader_script_path, args.elf_file],
-            env=sim_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+            logging.warning(
+                f"RUNNER: Starting custom command: {' '.join(cmd)}"
+            )
+            loader_proc = subprocess.Popen(
+                cmd,
+                env=sim_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
 
-        # Start threads for loader output
-        loader_stdout_thread = threading.Thread(target=stream_reader, args=(loader_proc.stdout, "LOADER"))
-        loader_stderr_thread = threading.Thread(target=stream_reader, args=(loader_proc.stderr, "LOADER_ERR"))
-        loader_stdout_thread.start()
-        loader_stderr_thread.start()
-        threads.extend([loader_stdout_thread, loader_stderr_thread])
+            # Start threads for command output
+            loader_stdout_thread = threading.Thread(
+                target=stream_reader, args=(loader_proc.stdout, "CMD")
+            )
+            loader_stderr_thread = threading.Thread(
+                target=stream_reader, args=(loader_proc.stderr, "CMD_ERR")
+            )
+            loader_stdout_thread.start()
+            loader_stderr_thread.start()
+            threads.extend([loader_stdout_thread, loader_stderr_thread])
 
-        # Wait for processes to complete
-        loader_proc.wait(timeout=300)
-        logging.warning(f"RUNNER: Loader finished. Running simulation for {args.run_time} seconds...")
+            # Wait for command to complete
+            loader_proc.wait(timeout=300)
+            logging.warning(
+                f"RUNNER: Command finished with status {loader_proc.returncode}. Running simulation for {args.run_time} seconds..."
+            )
+
+        elif args.elf_file:
+            loader_script_path = r.Rlocation(
+                "coralnpu_hw/utils/coralnpu_soc_loader/loader"
+            )
+            if not loader_script_path or not os.path.exists(loader_script_path
+                                                            ):
+                raise FileNotFoundError(
+                    "Could not find loader binary in runfiles."
+                )
+
+            logging.warning(
+                f"RUNNER: Starting ELF loader: {loader_script_path}"
+            )
+            loader_proc = subprocess.Popen(
+                [loader_script_path, args.elf_file],
+                env=sim_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            # Start threads for loader output
+            loader_stdout_thread = threading.Thread(
+                target=stream_reader, args=(loader_proc.stdout, "LOADER")
+            )
+            loader_stderr_thread = threading.Thread(
+                target=stream_reader, args=(loader_proc.stderr, "LOADER_ERR")
+            )
+            loader_stdout_thread.start()
+            loader_stderr_thread.start()
+            threads.extend([loader_stdout_thread, loader_stderr_thread])
+
+            # Wait for processes to complete
+            loader_proc.wait(timeout=300)
+            logging.warning(
+                f"RUNNER: Loader finished. Running simulation for {args.run_time} seconds..."
+            )
+        else:
+            logging.warning(
+                f"RUNNER: No ELF file provided. Running simulation for {args.run_time} seconds..."
+            )
+
         time.sleep(args.run_time)
 
-        logging.warning("RUNNER: Sending SIGINT to simulator for graceful shutdown...")
+        logging.warning(
+            "RUNNER: Sending SIGINT to simulator for graceful shutdown..."
+        )
         sim_proc.send_signal(signal.SIGINT)
         sim_proc.wait(timeout=10)
         logging.warning("RUNNER: Simulation finished.")
@@ -142,18 +273,27 @@ def main():
     finally:
         for t in threads:
             t.join()
+        if 'linked_raw' in locals() and linked_raw:
+            try:
+                os.remove("grey_bars_320x240.raw")
+                logging.warning("RUNNER: Cleaned up grey_bars_320x240.raw.")
+            except OSError:
+                pass
         logging.warning("RUNNER: All processes terminated.")
 
     if loader_proc and loader_proc.returncode != 0:
-        logging.error(f"RUNNER: Loader exited with non-zero status: {loader_proc.returncode}", file=sys.stderr)
+        logging.error(
+            f"RUNNER: Loader exited with non-zero status: {loader_proc.returncode}"
+        )
         sys.exit(loader_proc.returncode)
 
-    if sim_proc and sim_proc.returncode != 0 and sim_proc.returncode != -15: # -15 is SIGTERM
-         logging.error(f"RUNNER: Simulator exited with non-zero status: {sim_proc.returncode}", file=sys.stderr)
-         sys.exit(sim_proc.returncode)
+    if sim_proc and sim_proc.returncode != 0 and sim_proc.returncode != -15:  # -15 is SIGTERM
+        logging.error(
+            f"RUNNER: Simulator exited with non-zero status: {sim_proc.returncode}"
+        )
+        sys.exit(sim_proc.returncode)
 
     logging.warning("RUNNER: Simulation completed successfully.")
-
 
 
 if __name__ == "__main__":

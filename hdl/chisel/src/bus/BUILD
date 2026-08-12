@@ -14,42 +14,68 @@
 
 load(
     "@coralnpu_hw//rules:chisel.bzl",
-    "chisel_library",
     "chisel_cc_library",
+    "chisel_library",
+    "chisel_test",
 )
-load("@coralnpu_hw//rules:coco_tb.bzl", "cocotb_test_suite", "verilator_cocotb_model")
-load("@coralnpu_hw//third_party/python:requirements.bzl", "requirement")
-
-package(default_visibility = ["//visibility:public"])
-
+load("@coralnpu_hw//rules:coco_tb.bzl", "verilator_cocotb_model")
 load(
     "//tests/cocotb:build_defs.bzl",
     "VERILATOR_BUILD_ARGS",
 )
 
+package(default_visibility = ["//visibility:public"])
+
 chisel_library(
     name = "bus",
     srcs = [
         "Axi.scala",
-        "TlulIdRemapper.scala",
-        "TLUL2Axi.scala",
         "Axi2TLUL.scala",
-        "CoralNPUMemIO.scala",
+        "AxiAddressGenerator.scala",
+        "AxiRead2TLUL.scala",
+        "AxiWrite2TLUL.scala",
+        "Clint.scala",
+        "DmaEngine.scala",
+        "GPIO.scala",
+        "Plic.scala",
+        "RawTlulErrorResponder.scala",
+        "RawTlulToSram.scala",
         "SecdedEncoderTestbench.scala",
         "Spi2TLUL.scala",
+        "Spi2TLULV2.scala",
+        "SpiMaster.scala",
+        "TLUL2Axi.scala",
+        "TLULParameters.scala",
         "TileLinkUL.scala",
+        "TlulArbiter.scala",
         "TlulFifoAsync.scala",
         "TlulFifoSync.scala",
+        "TlulIdRemapper.scala",
         "TlulIntegrity.scala",
         "TlulIntegrityTestbench.scala",
+        "TlulLocalXbar.scala",
+        "TlulRouter.scala",
         "TlulSocket1N.scala",
         "TlulSocketM1.scala",
+        "TlulToSram.scala",
         "TlulWidthBridge.scala",
     ],
     deps = [
         "//hdl/chisel/src/common",
-        "//hdl/chisel/src/coralnpu:coralnpu_params",
         "@chipsalliance_rocket_chip//:asyncqueue",
+    ],
+)
+
+chisel_test(
+    name = "tlul_to_sram_test",
+    srcs = [
+        "TLULTestUtils.scala",
+        "TlulToSramTest.scala",
+    ],
+    deps = [
+        ":bus",
+        "//hdl/chisel/src/common:testing",
+        "//hdl/chisel/src/coralnpu:coralnpu_params",
     ],
 )
 
@@ -58,6 +84,27 @@ chisel_cc_library(
     chisel_lib = ":bus",
     emit_class = "bus.EmitAxi2TLUL",
     module_name = "Axi2TLUL",
+)
+
+chisel_cc_library(
+    name = "axi_read2tlul_cc_library",
+    chisel_lib = ":bus",
+    emit_class = "bus.EmitAxiRead2TLUL",
+    module_name = "AxiRead2TLUL",
+)
+
+chisel_cc_library(
+    name = "axi_write2tlul_cc_library",
+    chisel_lib = ":bus",
+    emit_class = "bus.EmitAxiWrite2TLUL",
+    module_name = "AxiWrite2TLUL",
+)
+
+chisel_cc_library(
+    name = "axi_addr_gen_cc_library",
+    chisel_lib = ":bus",
+    emit_class = "bus.EmitAxiAddressGenerator",
+    module_name = "AxiAddressGenerator",
 )
 
 chisel_cc_library(
@@ -103,18 +150,17 @@ chisel_cc_library(
 )
 
 chisel_cc_library(
-    name = "spi2tlul_128_cc_library",
+    name = "tlul_to_sram_cc_library",
     chisel_lib = ":bus",
-    emit_class = "bus.Spi2TLUL_128_Emitter",
-    module_name = "Spi2TLUL",
+    emit_class = "bus.TlulToSramEmitter",
+    module_name = "TlulToSram",
 )
 
-verilator_cocotb_model(
-    name = "spi2tlul_128_model",
-    cflags = VERILATOR_BUILD_ARGS,
-    hdl_toplevel = "Spi2TLUL",
-    trace = True,
-    verilog_source = "//hdl/chisel/src/bus:Spi2TLUL.sv",
+chisel_cc_library(
+    name = "tlul_local_xbar_cc_library",
+    chisel_lib = ":bus",
+    emit_class = "bus.TlulLocalXbarEmitter",
+    module_name = "TlulLocalXbar",
 )
 
 verilator_cocotb_model(
@@ -142,6 +188,14 @@ verilator_cocotb_model(
 )
 
 verilator_cocotb_model(
+    name = "tlul_local_xbar_model",
+    cflags = VERILATOR_BUILD_ARGS,
+    hdl_toplevel = "TlulLocalXbar",
+    trace = True,
+    verilog_source = "//hdl/chisel/src/bus:TlulLocalXbar.sv",
+)
+
+verilator_cocotb_model(
     name = "axi2tlul_model",
     cflags = VERILATOR_BUILD_ARGS,
     hdl_toplevel = "Axi2TLUL",
@@ -150,11 +204,27 @@ verilator_cocotb_model(
 )
 
 verilator_cocotb_model(
+    name = "axi_addr_gen_model",
+    cflags = VERILATOR_BUILD_ARGS,
+    hdl_toplevel = "AxiAddressGenerator",
+    trace = True,
+    verilog_source = "//hdl/chisel/src/bus:AxiAddressGenerator.sv",
+)
+
+verilator_cocotb_model(
     name = "tlul2axi_model",
     cflags = VERILATOR_BUILD_ARGS,
     hdl_toplevel = "TLUL2Axi",
     trace = True,
     verilog_source = "//hdl/chisel/src/bus:TLUL2Axi.sv",
+)
+
+verilator_cocotb_model(
+    name = "tlul_to_sram_model",
+    cflags = VERILATOR_BUILD_ARGS,
+    hdl_toplevel = "TlulToSram",
+    trace = True,
+    verilog_source = "//hdl/chisel/src/bus:TlulToSram.sv",
 )
 
 chisel_cc_library(
@@ -223,4 +293,53 @@ verilator_cocotb_model(
     hdl_toplevel = "SecdedEncoderTestbench57",
     trace = True,
     verilog_source = "//hdl/chisel/src/bus:SecdedEncoderTestbench57.sv",
+)
+
+chisel_test(
+    name = "spi_master_test",
+    size = "large",
+    srcs = [
+        "SpiMasterTest.scala",
+        "TLULTestUtils.scala",
+    ],
+    deps = [
+        ":bus",
+        "//hdl/chisel/src/common:testing",
+        "//hdl/chisel/src/coralnpu:coralnpu_params",
+    ],
+)
+
+chisel_test(
+    name = "gpio_test",
+    srcs = [
+        "GPIOTest.scala",
+        "TLULTestUtils.scala",
+    ],
+    deps = [
+        ":bus",
+        "//hdl/chisel/src/common:testing",
+        "//hdl/chisel/src/coralnpu:coralnpu_params",
+    ],
+)
+
+chisel_test(
+    name = "dma_engine_test",
+    size = "large",
+    srcs = ["DmaEngineTest.scala"],
+    deps = [
+        ":bus",
+        "//hdl/chisel/src/common:testing",
+        "//hdl/chisel/src/coralnpu:coralnpu_params",
+    ],
+)
+
+chisel_test(
+    name = "spi2tlulv2_test",
+    size = "large",
+    srcs = ["Spi2TLULV2Test.scala"],
+    deps = [
+        ":bus",
+        "//hdl/chisel/src/common:testing",
+        "//hdl/chisel/src/coralnpu:coralnpu_params",
+    ],
 )

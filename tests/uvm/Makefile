@@ -14,9 +14,14 @@
 
 # Makefile for CoralNPU UVM Testbench (Integrates with MPACT-Sim)
 
-# Check if CORALNPU_MPACT is set. If not, exit with an error.
+# Bazel repository cache flag
+BAZEL_CACHE_ARG = $(if $(BAZEL_CACHE),--repository_cache=$(BAZEL_CACHE),)
+
+# If CORALNPU_MPACT is not set, dynamically resolve it from Bazel's http_archive cache
 ifndef CORALNPU_MPACT
-    $(error CORALNPU_MPACT is not set. Please define it, e.g., export CORALNPU_MPACT=$(abspath ../../../coralnpu-mpact))
+    _FETCH := $(shell bazel build $(BAZEL_CACHE_ARG) @coralnpu_mpact//:coralnpu_sim_users > /dev/null 2>&1)
+    BAZEL_OUTPUT_BASE = $(shell bazel info output_base)
+    CORALNPU_MPACT = $(BAZEL_OUTPUT_BASE)/external/coralnpu_mpact
 endif
 
 # Generated RTL path
@@ -26,7 +31,16 @@ GENERATED_RTL_SRC = $(BAZEL_BIN_DIR)/hdl/chisel/src/coralnpu/$(GENERATED_RTL_NAM
 
 # User Configuration
 VCS = vcs
+VERILATOR ?= verilator
 CXX = clang++
+SIMULATOR ?= vcs
+
+ifeq ($(SIMULATOR),vcs)
+SIM_BIN = $(VCS)
+else
+SIM_BIN = $(VERILATOR)
+endif
+
 
 # UVM DV Directories
 COMMON_DIR = ./common
@@ -38,22 +52,22 @@ UTILS_DIR = ./utils
 
 # Simulation Work Directory
 SIM_DIR = ./sim_work
+BUILD_DIR = $(SIM_DIR)/build
 LOG_DIR = $(SIM_DIR)/logs
 WAVE_DIR = $(SIM_DIR)/waves
-MEM_FILE_DIR = $(SIM_DIR)/mem_files
-RUN_OPTS_FILE = $(MEM_FILE_DIR)/elf_run_opts.f
 
 # MPACT-Sim Integration Paths
 MPACT_BAZEL_BIN_DIR = $(CORALNPU_MPACT)/bazel-bin/sim/cosim
 MPACT_COSIM_LIB_NAME = coralnpu_cosim_lib_static
+MPACT_LIB_PATH = $(MPACT_BAZEL_BIN_DIR)/lib$(MPACT_COSIM_LIB_NAME).a
 
-# File List for VCS -f option
+# File List for -f option
 FILE_LIST = ./coralnpu_dv.f
 
 # Simulation Settings
 SIM_EXEC = $(SIM_DIR)/simv
 UVM_TESTNAME ?= coralnpu_base_test
-TEST_ELF ?= $(BIN_DIR)/program.elf
+TEST_ELF ?= $(BIN_DIR)/rvv_aadd_int16_m1.elf
 UVM_VERBOSITY ?= UVM_MEDIUM
 TEST_TIMEOUT_NS ?= 100000
 MISA_VALUE ?= "'h40201120'"
@@ -63,61 +77,106 @@ PLUSARGS = +UVM_TESTNAME=$(UVM_TESTNAME) \
            +MISA_VALUE=$(MISA_VALUE)
 
 # Waveform Dumping
-DUMP_WAVES = 1
+ifeq ($(SIMULATOR),vcs)
+DUMP_WAVES_FSDB = 1
 WAVE_FILE = $(WAVE_DIR)/$(UVM_TESTNAME).fsdb
+else
+DUMP_WAVES_VCD = 1
+WAVE_FILE = $(WAVE_DIR)/$(UVM_TESTNAME).vcd
+endif
 
-# VCS Options
-VCS_COMPILE_OPTS = \
+# Compile options
+ifeq ($(SIMULATOR),vcs)
+SIM_COMPILE_OPTS = \
 	-full64 \
 	-sverilog \
 	+define+UVM_NO_DEPRECATED \
+	+define+TB_SUPPORT \
+		+define+VLEN_128 \
+		+define+ZVE32F_ON \
 	-ntb_opts uvm-1.2 \
 	-debug_access+all \
 	-kdb \
 	-timescale=1ns/1ps \
-	-o $(SIM_EXEC)
+	-o $(SIM_EXEC) \
+	-cpp $(CXX) \
+	-cppflags "-std=c++17" \
+	-CFLAGS "-I$(CORALNPU_MPACT)" \
+	$(MPACT_LIB_PATH)
+else
+SIM_COMPILE_OPTS = \
+	--binary \
+	--build-jobs $(shell nproc --all) \
+	--top coralnpu_tb_top \
+	-Wno-PINMISSING -Wno-lint -Wno-style -Wno-fatal \
+	--vpi \
+	--trace-vcd \
+	+define+UVM_NO_DEPRECATED \
+	+define+TB_SUPPORT \
+	+define+VLEN_128 \
+	+define+ZVE32F_ON \
+	+define+DUMP_WAVES_VCD \
+	--timescale 1ns/1ps \
+	-CFLAGS "-std=c++17 -I$(CORALNPU_MPACT)" \
+	-I"$(UVM)/src/" \
+	"$(UVM)/src/uvm_pkg.sv" \
+	"$(UVM)/src/dpi/uvm_dpi.cc" \
+	"$(MPACT_LIB_PATH)" \
+	-Mdir $(BUILD_DIR) \
+	-o simv \
+	-MAKEFLAGS "VERILATOR_ROOT=$(VERILATOR_ROOT)"
+SIM_EXEC = $(BUILD_DIR)/simv
+endif
 
-# Add C++ compiler/linker options for MPACT-Sim
-VCS_COMPILE_OPTS += \
-    -cpp $(CXX) \
-    -cppflags "-std=c++17" \
-    -CFLAGS "-I$(CORALNPU_MPACT)" \
-    -L$(MPACT_BAZEL_BIN_DIR) \
-    -l$(MPACT_COSIM_LIB_NAME)
-
-VCS_RUN_OPTS = \
+SIM_RUN_OPTS = \
 	$(PLUSARGS) \
-	-f $(RUN_OPTS_FILE)
+	$(EXTRA_PLUSARGS)
 
 # Add define to COMPILE options for waveform dumping
-ifeq ($(DUMP_WAVES),1)
-VCS_COMPILE_OPTS += +define+DUMP_WAVES
-VCS_RUN_OPTS += +fsdb+all \
+ifeq ($(DUMP_WAVES_FSDB),1)
+SIM_COMPILE_OPTS += +define+DUMP_WAVES_FSDB
+SIM_RUN_OPTS += +fsdb+all \
                 +fsdbfile+$(WAVE_FILE)
 endif
 
+# Add Spike Log to runtime options if defined
+ifdef SPIKE_LOG
+SIM_RUN_OPTS += +SPIKE_LOG=$(SPIKE_LOG)
+endif
+
+# Bazel override flags.
+# We must always override coralnpu_hw because the simulator's WORKSPACE template
+# loads patch files from the main @coralnpu_hw workspace.
+BAZEL_OVERRIDE_FLAGS = --override_repository=coralnpu_hw=$(abspath $(CURDIR)/../..)
+
+ifdef CORALNPU_MPACT_RISCV
+    BAZEL_OVERRIDE_FLAGS += --override_repository=com_google_mpact-riscv=$(CORALNPU_MPACT_RISCV)
+endif
+
+MPACT_COMMIT ?= 430a8d1
+
 # Targets
 
-.PHONY: all compile run clean dirs help build_mpact_lib gen_mem_files rtl
+.PHONY: all compile run clean dirs help build_mpact_lib gen_mem_files rtl run_3way checkout_mpact
 
 # Default target, builds and then runs.
 all: compile run
 
+# Checkout MPACT-Sim at a specific commit
+checkout_mpact:
+	@echo "--- Checking out CORALNPU_MPACT at commit $(MPACT_COMMIT) ---"
+	cd $(CORALNPU_MPACT) && git fetch && git checkout $(MPACT_COMMIT)
+
 # Create necessary directories
 dirs:
-	@mkdir -p $(SIM_DIR) $(LOG_DIR) $(WAVE_DIR) $(BIN_DIR) $(MEM_FILE_DIR)
+	@mkdir -p $(SIM_DIR) $(LOG_DIR) $(WAVE_DIR) $(BIN_DIR)
 
 # Build the MPACT-Sim library using Bazel with CC=clang
 build_mpact_lib:
 	@echo "--- Building MPACT-Sim Co-sim Library via Bazel ---"
-	cd $(CORALNPU_MPACT) && CC=clang bazel build //sim/cosim:$(MPACT_COSIM_LIB_NAME)
+	cd $(CORALNPU_MPACT) && CC=clang bazel build $(BAZEL_CACHE_ARG) $(BAZEL_OVERRIDE_FLAGS) $(MPACT_BAZEL_FLAGS) //sim/cosim:$(MPACT_COSIM_LIB_NAME)
 
 # Generate memory and run option files from the ELF file
-gen_mem_files: dirs
-	@echo "--- Generating Memory and Run Option Files from ELF ---"
-	@rm -f $(MEM_FILE_DIR)/*
-	python3 $(UTILS_DIR)/elf_to_mem.py --elf_file $(TEST_ELF) --out_dir $(MEM_FILE_DIR)
-
 # Generate the DUT RTL from Chisel source
 rtl:
 	@echo "--- Generating DUT RTL from Chisel ---"
@@ -125,14 +184,14 @@ rtl:
 
 # Compile the design
 $(SIM_EXEC): $(FILE_LIST) dirs build_mpact_lib rtl
-	@echo "--- Compiling with VCS ---"
-	$(VCS) $(VCS_COMPILE_OPTS) -l $(LOG_DIR)/compile.log -f $(FILE_LIST) $(GENERATED_RTL_SRC)
+	@echo "--- Compiling Simulation ---"
+	$(SIM_BIN) $(SIM_COMPILE_OPTS) -f $(FILE_LIST) $(GENERATED_RTL_SRC)
 	@echo "--- Compilation Finished ---"
 
 compile: $(SIM_EXEC)
 
 # Run the simulation
-run: gen_mem_files
+run:
 	@echo "--- Running Simulation ---"
 	@echo "Test:      $(UVM_TESTNAME)"
 	@echo "ELF File:  $(TEST_ELF)"
@@ -140,11 +199,16 @@ run: gen_mem_files
 	@echo "Timeout:   $(TEST_TIMEOUT_NS) ns"
 	@echo "Plusargs:  $(PLUSARGS)"
 	@echo "Log File:  $(LOG_DIR)/$(UVM_TESTNAME).log"
-ifeq ($(DUMP_WAVES),1)
+ifeq ($(DUMP_WAVES_FSDB),1)
 	@echo "Wave File: $(WAVE_FILE)"
 endif
-	./$(SIM_EXEC) $(VCS_RUN_OPTS) -l $(LOG_DIR)/$(UVM_TESTNAME).log
+	./$(SIM_EXEC) $(SIM_RUN_OPTS) -l $(LOG_DIR)/$(UVM_TESTNAME).log
 	@echo "--- Simulation Finished ---"
+
+# 3-Way Simulation
+run_3way:
+	@echo "--- Running 3-Way Simulation (with Spike) ---"
+	$(MAKE) run SPIKE_LOG=$(if $(SPIKE_LOG),$(SPIKE_LOG),$(abspath spike.log))
 
 # Clean up simulation files
 clean:
@@ -161,9 +225,10 @@ help:
 	@echo "  make compile          : Builds the simulator executable."
 	@echo "  make run              : Runs the simulation. Compiles first if the executable is missing or source files have changed."
 	@echo "                        :   Override defaults: make run UVM_TESTNAME=<test> TEST_ELF=<path> UVM_VERBOSITY=<level>"
+	@echo "  make run_3way         : Runs the simulation with 3-way check enabled (Spike)."
 	@echo "  make rtl              : Generates the DUT Verilog from Chisel source"
 	@echo "  make build_mpact_lib  : Only builds the MPACT-Sim C++ library"
-	@echo "  make gen_mem_files    : Only generates ITCM/DTCM and run opt files"
+	@echo "  make checkout_mpact   : Checks out CORALNPU_MPACT at MPACT_COMMIT (default: $(MPACT_COMMIT))"
 	@echo "  make clean            : Removes generated simulation and MPACT-Sim files"
 	@echo "  make dirs             : Creates simulation directories"
 	@echo "  make help             : Shows this help message"

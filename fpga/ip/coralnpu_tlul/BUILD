@@ -12,7 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_hdl//verilog:providers.bzl", "verilog_library")
+
 package(default_visibility = ["//visibility:public"])
+
+verilog_library(
+    name = "coralnpu_tlul",
+    srcs = glob(["*.sv"]),
+)
 
 filegroup(
     name = "rtl_files",

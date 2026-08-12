@@ -19,48 +19,56 @@ import chisel3.util._
 
 import common._
 
-// Picks one of two fabric commands to route to a port. Priority is given to the
-// first port.
-class FabricArbiter(p: Parameters) extends Module {
+// Picks one of N fabric commands to route to a port. Priority is given to the
+// earliest valid port.
+class FabricArbiter(p: Parameters, n: Int = 2) extends Module {
   val io = IO(new Bundle {
-    val source = Vec(2, Flipped(new FabricIO(p)))
-    val fabricBusy = Output(Bool())  // Back pressure for the second port
-    val port = new FabricIO(p)
+    val source     = Vec(n, Flipped(new FabricIO(p)))
+    val fabricBusy = Output(Vec(n, Bool())) // Back pressure for each port
+    val port       = new FabricIO(p)
   })
   // Only read, or only write (or none) can be issued.
-  assert(!(io.source(0).readDataAddr.valid && io.source(0).writeDataAddr.valid))
-  assert(!(io.source(1).readDataAddr.valid && io.source(1).writeDataAddr.valid))
-  val source0Valid = io.source(0).readDataAddr.valid ||
-                     io.source(0).writeDataAddr.valid
+  assert(!io.source.map(x => x.readDataAddr.valid && x.writeDataAddr.valid).reduce(_ || _))
+  val sourceValid = io.source.map(x => x.readDataAddr.valid || x.writeDataAddr.valid)
 
-  io.fabricBusy := source0Valid
+  // fabricBusy(i) is true if any source with higher priority (index < i) is valid.
+  val busySignals = sourceValid.scanLeft(false.B)(_ || _).dropRight(1)
+  io.fabricBusy := VecInit(busySignals)
 
-  io.port.readDataAddr  := Mux(source0Valid, io.source(0).readDataAddr,
-                                             io.source(1).readDataAddr)
-  io.port.writeDataAddr := Mux(source0Valid, io.source(0).writeDataAddr,
-                                             io.source(1).writeDataAddr)
-  io.port.writeDataBits := Mux(source0Valid, io.source(0).writeDataBits,
-                                             io.source(1).writeDataBits)
-  io.port.writeDataStrb := Mux(source0Valid, io.source(0).writeDataStrb,
-                                             io.source(1).writeDataStrb)
+  io.port.readDataAddr := MuxCase(
+    MakeInvalid(UInt(p.axi2AddrBits.W)),
+    (0 until n).map(x => (sourceValid(x) -> io.source(x).readDataAddr))
+  )
+  io.port.writeDataAddr := MuxCase(
+    MakeInvalid(UInt(p.axi2AddrBits.W)),
+    (0 until n).map(x => (sourceValid(x) -> io.source(x).writeDataAddr))
+  )
+  io.port.writeDataBits := MuxCase(
+    0.U(p.axi2DataBits.W),
+    (0 until n).map(x => (sourceValid(x) -> io.source(x).writeDataBits))
+  )
+  io.port.writeDataStrb := MuxCase(
+    0.U((p.axi2DataBits / 8).W),
+    (0 until n).map(x => (sourceValid(x) -> io.source(x).writeDataStrb))
+  )
 
   // Broadcast SRAM outputs back
-  io.source(0).readData := io.port.readData
-  io.source(1).readData := io.port.readData
-  io.source(0).writeResp := io.port.writeResp
-  io.source(1).writeResp := io.port.writeResp
+  for (i <- 0 until n) {
+    io.source(i).readData  := io.port.readData
+    io.source(i).writeResp := io.port.writeResp
+  }
 }
 
 // Routes one fabric command from source to a given port.
 class FabricMux(p: Parameters, regions: Seq[MemoryRegion]) extends Module {
-  val portCount = regions.length
+  val portCount   = regions.length
   val portIdxBits = log2Ceil(portCount)
   val portIdxType = UInt(log2Ceil(portCount).W)
-  val io = IO(new Bundle {
-    val source = Flipped(new FabricIO(p))
+  val io          = IO(new Bundle {
+    val source     = Flipped(new FabricIO(p))
     val fabricBusy = Output(Bool())
 
-    val ports = Vec(portCount, new FabricIO(p))
+    val ports    = Vec(portCount, new FabricIO(p))
     val periBusy = Vec(portCount, Input(Bool()))
   })
 
@@ -69,59 +77,71 @@ class FabricMux(p: Parameters, regions: Seq[MemoryRegion]) extends Module {
 
   // Determine which port to forward command to
   val sourceValid = io.source.readDataAddr.valid ||
-                    io.source.writeDataAddr.valid
-  val addr = MuxUpTo1H(0.U, Seq(
-    io.source.readDataAddr.valid -> io.source.readDataAddr.bits,
-    io.source.writeDataAddr.valid -> io.source.writeDataAddr.bits,
-  ))
-  val selected = MuxCase(MakeInvalid(portIdxType), (0 until portCount).map(
-    x => (sourceValid && regions(x).contains(addr)) ->
+    io.source.writeDataAddr.valid
+  val addr = MuxUpTo1H(
+    0.U,
+    Seq(
+      io.source.readDataAddr.valid  -> io.source.readDataAddr.bits,
+      io.source.writeDataAddr.valid -> io.source.writeDataAddr.bits
+    )
+  )
+  val selected = MuxCase(
+    MakeInvalid(portIdxType),
+    (0 until portCount).map(x =>
+      (sourceValid && regions(x).contains(addr)) ->
         MakeValid(true.B, x.U(portIdxBits.W))
-  ))
+    )
+  )
 
-  val portSelected = (0 until portCount).map(
-      i => selected.valid && (selected.bits === i.U) && !io.periBusy(i))
-  assert(PopCount(VecInit(portSelected)) <= 1.U)  // Should only select one port
+  val portSelected =
+    (0 until portCount).map(i => selected.valid && (selected.bits === i.U) && !io.periBusy(i))
+  assert(PopCount(VecInit(portSelected)) <= 1.U) // Should only select one port
 
-  io.fabricBusy := MuxUpTo1H(false.B, (0 until portCount).map(
-    i => (selected.valid && (selected.bits === i.U)) -> io.periBusy(i)
-  ))
+  io.fabricBusy := MuxUpTo1H(
+    false.B,
+    (0 until portCount).map(i => (selected.valid && (selected.bits === i.U)) -> io.periBusy(i))
+  )
 
   // Forward commands to ports
   for (i <- 0 until portCount) {
     val readAddr = io.source.readDataAddr.bits &
-        ~regions(i).memStart.U(p.fetchAddrBits.W)
+      ~regions(i).memStart.U(p.fetchAddrBits.W)
     val writeAddr = io.source.writeDataAddr.bits &
-        ~regions(i).memStart.U(p.fetchAddrBits.W)
+      ~regions(i).memStart.U(p.fetchAddrBits.W)
 
     io.ports(i).readDataAddr.valid :=
-        portSelected(i) && io.source.readDataAddr.valid
-    io.ports(i).readDataAddr.bits := Mux(portSelected(i), readAddr, 0.U)
+      portSelected(i) && io.source.readDataAddr.valid
+    io.ports(i).readDataAddr.bits   := Mux(portSelected(i), readAddr, 0.U)
     io.ports(i).writeDataAddr.valid :=
-        portSelected(i) && io.source.writeDataAddr.valid
+      portSelected(i) && io.source.writeDataAddr.valid
     io.ports(i).writeDataAddr.bits := Mux(portSelected(i), writeAddr, 0.U)
-    io.ports(i).writeDataBits := 
-        Mux(portSelected(i), io.source.writeDataBits, 0.U)
-    io.ports(i).writeDataStrb := 
-        Mux(portSelected(i), io.source.writeDataStrb, 0.U)
+    io.ports(i).writeDataBits      :=
+      Mux(portSelected(i), io.source.writeDataBits, 0.U)
+    io.ports(i).writeDataStrb :=
+      Mux(portSelected(i), io.source.writeDataStrb, 0.U)
   }
 
   // Pick writeResp from the correct port
-  io.source.writeResp := MuxUpTo1H(false.B, (0 until portCount).map(
-      i => portSelected(i) -> io.ports(i).writeResp,
-  ))
+  io.source.writeResp := MuxUpTo1H(
+    false.B,
+    (0 until portCount).map(i => portSelected(i) -> io.ports(i).writeResp)
+  )
 
   // Pick readData from the correct port. Should be delayed by one cycle to
   // match behaviours of peripherals.
   val lastReadSelected = RegInit(MakeInvalid(portIdxType))
-  lastReadSelected := MuxUpTo1H(MakeInvalid(portIdxType), (0 until portCount).map(
-    i => (portSelected(i) && io.source.readDataAddr.valid) ->
+  lastReadSelected := MuxUpTo1H(
+    MakeInvalid(portIdxType),
+    (0 until portCount).map(i =>
+      (portSelected(i) && io.source.readDataAddr.valid) ->
         MakeValid(true.B, i.U(portIdxBits.W))
-  ))
-  io.source.readData := MuxUpTo1H(MakeInvalid(UInt(p.axi2DataBits.W)),
-        (0 until portCount).map(i =>
-            (lastReadSelected.valid && (lastReadSelected.bits === i.U)) ->
-                io.ports(i).readData
-        )
+    )
+  )
+  io.source.readData := MuxUpTo1H(
+    MakeInvalid(UInt(p.axi2DataBits.W)),
+    (0 until portCount).map(i =>
+      (lastReadSelected.valid && (lastReadSelected.bits === i.U)) ->
+        io.ports(i).readData
+    )
   )
 }

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 load("//rules:coco_tb.bzl", "cocotb_test_suite", "verilator_cocotb_model")
-load("//rules:coralnpu_v2.bzl", "coralnpu_v2_binary")
+load("//rules:coralnpu_v2.bzl", "collect_coralnpu_elfs", "coralnpu_v2_binary")
 load(
     "//tests/cocotb:build_defs.bzl",
     "VCS_BUILD_ARGS",
@@ -57,10 +57,12 @@ cocotb_test_suite(
     },
     vcs_build_args = VCS_BUILD_ARGS,
     vcs_data = [":inst_cycle_counter_example.elf"] + [
-        "//tests/cocotb:coverage_exclude.cfg",
+        "//hdl/verilog:dpi_files",
     ],
     vcs_defines = VCS_DEFINES,
     vcs_test_args = VCS_TEST_ARGS,
     vcs_verilog_sources = ["//hdl/chisel/src/coralnpu:rvv_core_mini_axi_cc_library_verilog"],
     verilator_model = "//tests/cocotb:rvv_core_mini_axi_model",
 )
+
+collect_coralnpu_elfs()

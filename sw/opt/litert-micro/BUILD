@@ -12,18 +12,92 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
 package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "memory_util",
+    hdrs = ["memory_util.h"],
+    target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
+    deps = [
+        "@tflite_micro//tensorflow/lite/kernels/internal:compatibility",
+    ],
+)
+
+cc_library(
+    name = "accumulator_util",
+    hdrs = ["accumulator_util.h"],
+    target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
+    deps = [
+        "@tflite_micro//tensorflow/lite/kernels/internal:compatibility",
+    ],
+)
 
 cc_library(
     name = "depthwise_conv",
     srcs = [
-        "accumulator_util.h",
         "depthwise_conv.cc",
     ],
     hdrs = ["depthwise_conv.h"],
     target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
     deps = [
+        ":accumulator_util",
+        ":memory_util",
         "//sw/opt:rvv_opt",
         "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+    ],
+)
+
+cc_library(
+    name = "conv",
+    srcs = [
+        "conv.cc",
+    ],
+    hdrs = ["conv.h"],
+    target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
+    deps = [
+        ":accumulator_util",
+        ":memory_util",
+        "//sw/opt:rvv_opt",
+        "@tflite_micro//tensorflow/lite/kernels/internal:common",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+    ],
+)
+
+cc_library(
+    name = "pooling",
+    srcs = ["pooling.cc"],
+    hdrs = ["pooling.h"],
+    target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
+    deps = [
+        "@tflite_micro//tensorflow/lite/kernels/internal:reference_base",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+        "@tflite_micro//tensorflow/lite/micro/kernels:micro_ops",
+    ],
+)
+
+cc_library(
+    name = "fully_connected",
+    srcs = ["fully_connected.cc"],
+    hdrs = ["fully_connected.h"],
+    target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
+    deps = [
+        ":accumulator_util",
+        "@tflite_micro//tensorflow/lite/kernels/internal:reference_base",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+        "@tflite_micro//tensorflow/lite/micro/kernels:micro_ops",
+    ],
+)
+
+cc_library(
+    name = "logistic",
+    srcs = ["logistic.cc"],
+    hdrs = ["logistic.h"],
+    target_compatible_with = ["//platforms/cpu:coralnpu_v2"],
+    deps = [
+        "@tflite_micro//tensorflow/lite/kernels/internal:reference_base",
+        "@tflite_micro//tensorflow/lite/micro:op_resolvers",
+        "@tflite_micro//tensorflow/lite/micro/kernels:micro_ops",
     ],
 )

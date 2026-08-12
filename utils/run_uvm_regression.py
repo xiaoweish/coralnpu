@@ -12,32 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import subprocess
-import os
-import csv
-import sys
-import re
 import argparse
-import shutil
-import stat
+import csv
 import datetime
-import xml.etree.ElementTree as ET
-import signal
-import tempfile
+import fnmatch
 import logging
-from typing import List, Tuple, Optional, Dict
+import os
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+from typing import Dict, List, Optional, Tuple
+
 from elftools.elf.elffile import ELFFile
 
 # Configure logging
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s - %(levelname)s - %(message)s",
-                    datefmt="%H:%M:%S")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%H:%M:%S"
+)
 
 # List of targets to exclude from the regression
 DENYLIST = [
     # Checks mcycle
     "//tests/cocotb/tutorial/counters:inst_cycle_counter_example",
     "//tests/cocotb/coralnpu_isa:perf_counters",
+    # Peripherals
+    "//tests/cocotb:timer_interrupt_test",
+    "//tests/cocotb:plic_test",
     # RVV exceptions, not supported by MPACT (yet)
     "//tests/cocotb/rvv:vill_test",
     "//tests/cocotb:vector_store",
@@ -50,6 +57,40 @@ DENYLIST = [
     "//tests/cocotb/rvv:vmsbf_test",
     "//tests/cocotb/rvv/load_store:load_unit_masked",
     "//tests/cocotb/rvv/load_store:store_unit_masked",
+    "//tests/cocotb/rvv/arithmetics:vmsge_vx_test",
+    # MPACT needs update to canonical-NaN
+    "//tests/cocotb/rvv/arithmetics:rvv_fdiv_float_rdn_m1",
+    "//tests/cocotb/rvv/arithmetics:rvv_fdiv_float_rmm_m1",
+    "//tests/cocotb/rvv/arithmetics:rvv_fdiv_float_rne_m1",
+    "//tests/cocotb/rvv/arithmetics:rvv_fdiv_float_rtz_m1",
+    "//tests/cocotb/rvv/arithmetics:rvv_fdiv_float_rup_m1",
+    "//tests/cocotb/rvv/arithmetics:vfdiv_vf_test_rdn",
+    "//tests/cocotb/rvv/arithmetics:vfdiv_vf_test_rmm",
+    "//tests/cocotb/rvv/arithmetics:vfdiv_vf_test_rne",
+    "//tests/cocotb/rvv/arithmetics:vfdiv_vf_test_rtz",
+    "//tests/cocotb/rvv/arithmetics:vfdiv_vf_test_rup",
+    "//tests/cocotb/rvv/arithmetics:vfrdiv_vf_test_rdn",
+    "//tests/cocotb/rvv/arithmetics:vfrdiv_vf_test_rmm",
+    "//tests/cocotb/rvv/arithmetics:vfrdiv_vf_test_rne",
+    "//tests/cocotb/rvv/arithmetics:vfrdiv_vf_test_rtz",
+    "//tests/cocotb/rvv/arithmetics:vfrdiv_vf_test_rup",
+    # Exclude until MPACT supports the vector bf16 spec.
+    "*bf16*",
+    "//tests/cocotb:zvfbf_test",
+    # Exclude all ml_ops tests from regression
+    "//tests/cocotb/rvv/ml_ops:rvv_float_matmul",
+    "//tests/cocotb/rvv/ml_ops:rvv_float_matmul_assembly",
+    "//tests/cocotb/rvv/ml_ops:rvv_float_matmul_optimized",
+    "//tests/cocotb/rvv/ml_ops:rvv_matmul",
+    "//tests/cocotb/rvv/ml_ops:rvv_matmul_assembly",
+    "//tests/cocotb/rvv/ml_ops:rvv_matmul_assembly_highmem",
+    "//tests/cocotb/rvv/ml_ops:rvv_matmul_assembly_itcm512kb_dtcm512kb",
+    "//tests/cocotb/rvv/ml_ops:rvv_matmul_highmem",
+    "//tests/cocotb/rvv/ml_ops:rvv_matmul_itcm512kb_dtcm512kb",
+    # 1) UVM backdoor loader does not support loading to external memory (.extdata).
+    # 2) UVM testbench lacks mechanism to initialize input/scale/zp data in external memory.
+    "//internal/kernels:*",
+    "//internal/kernels/*",
 ]
 
 # List of targets to exclude from Spike co-simulation (e.g. tests requiring external IRQs)
@@ -59,7 +100,9 @@ SPIKE_DENYLIST = [
     "//tests/cocotb/rvv:rvv_add",
     "//tests/cocotb/rvv:rvv_load",
     "//tests/cocotb/rvv:vstart_store",
+    "//tests/cocotb:loop",
     "//tests/cocotb:registers",
+    "//tests/cocotb:software_interrupt_test",
     "//tests/cocotb:stress_test",
     "//tests/cocotb:wfi_slot_0",
     "//tests/cocotb:wfi_slot_1",
@@ -69,9 +112,28 @@ SPIKE_DENYLIST = [
 
 # Map of targets to custom timeouts (in nanoseconds)
 TIMEOUT_MAP = {
+    "//tests/cocotb:nop_test": 5000000,
+    "//tests/cocotb/rvv/ml_ops:rvv_float_matmul": 100000000,
     "//tests/cocotb/rvv/ml_ops:rvv_matmul": 100000000,
     "//tests/cocotb/rvv/ml_ops:rvv_matmul_assembly": 100000000,
+    "//examples:coralnpu_v2_rvv_add_intrinsic": 200000,
 }
+
+
+def format_batch_entry(
+    elf: str, tohost: int, entry: int, timeout: int, spike_log: str,
+    target: str
+) -> str:
+    return "%s %08x %08x %d %s %s\n" % (
+        elf, tohost, entry, timeout, spike_log, target
+    )
+
+
+def is_riscv_test_file(fname: str) -> bool:
+    # heuristic: riscv-tests binaries start with rv32, dump files are
+    # objdump output sitting alongside them, not test binaries
+    return not fname.endswith('.dump') and fname.startswith('rv32')
+
 
 # Spike simulation parameters
 SPIKE_MEMORY_REGIONS = [
@@ -79,7 +141,7 @@ SPIKE_MEMORY_REGIONS = [
     (0x10000, 0x8000),  # DTCM
     (0x20000000, 0x400000),  # DRAM
 ]
-SPIKE_ISA = "rv32imf_zve32x_zvl128b_zicsr_zifencei_zbb"
+SPIKE_ISA = "rv32imf_zve32f_zvl128b_zicsr_zifencei_zbb_zfbfmin_zvfbfa"
 
 
 def get_spike_memory_map_str() -> str:
@@ -98,14 +160,22 @@ def get_targets(limit: Optional[int] = None,
     logging.info("Querying bazel targets...")
     # Using --output=xml to parse attributes
     cmd = ["bazel", "query", "kind(coralnpu_v2_binary, //...)", "--output=xml"]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, check=True
+        )
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Bazel query failed: {e}")
+        if e.stderr:
+            logging.error(f"Stderr: {e.stderr}")
+        sys.exit(1)
     root = ET.fromstring(result.stdout)
     targets = []
     for rule in root.findall('rule'):
         target_name_full = rule.attrib['name']  # //package:target
-
         # Check against DENYLIST
-        if target_name_full in DENYLIST:
+        if any(fnmatch.fnmatch(target_name_full, pattern)
+               for pattern in DENYLIST):
             continue
 
         # Check linker_script attribute
@@ -151,8 +221,8 @@ def build_targets(targets: List[str]) -> bool:
     try:
         subprocess.run(cmd, check=True)
         return True
-    except subprocess.CalledProcessError:
-        logging.error("Build failed for some targets.")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Build failed for some targets: {e}")
         return False
 
 
@@ -160,17 +230,16 @@ def get_elf_source_path(target: str) -> Optional[str]:
     # Use bazel cquery to get the actual output path
     cmd = ["bazel", "cquery", "--output=files", target]
     try:
-        result = subprocess.run(cmd,
-                                capture_output=True,
-                                text=True,
-                                check=True)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, check=True
+        )
         lines = result.stdout.strip().split('\n')
         for line in lines:
             if line.endswith('.elf'):
                 return line.strip()
         return None
     except subprocess.CalledProcessError as e:
-        logging.error("Error finding ELF source path: {e}")
+        logging.error(f"Error finding ELF source path: {e}")
         return None
 
 
@@ -184,20 +253,52 @@ def get_entry_point(elf_path: str) -> int:
         return 0
 
 
-def build_simulator(mpact_root: str,
-                    mpact_riscv_root: Optional[str] = None) -> bool:
+def get_tohost_addr(elf_path: str) -> Optional[int]:
+    try:
+        with open(elf_path, 'rb') as f:
+            elf = ELFFile(f)
+            symtab = elf.get_section_by_name('.symtab')
+            if symtab:
+                syms = symtab.get_symbol_by_name('tohost')
+                if syms and len(syms) > 0:
+                    return syms[0]['st_value']
+    except Exception as e:
+        logging.error(f"Error reading tohost addr: {e}")
+    return None
+
+
+def build_simulator(
+    mpact_root: str,
+    simulator: str,
+    mpact_riscv_root: Optional[str] = None,
+    verilator_bin: Optional[str] = None,
+    verilator_root: Optional[str] = None,
+    uvm_root: Optional[str] = None
+) -> bool:
     logging.info("Building UVM Simulator (simv)...")
     env = os.environ.copy()
     env["CORALNPU_MPACT"] = mpact_root
     if mpact_riscv_root:
         env["CORALNPU_MPACT_RISCV"] = mpact_riscv_root
+    if verilator_bin:
+        env["VERILATOR"] = verilator_bin
+    if verilator_root:
+        env["VERILATOR_ROOT"] = verilator_root
+        env["VERILATOR_CXX"] = os.environ.get("VERILATOR_CXX", "g++")
+        env["VERILATOR_AR"] = os.environ.get("VERILATOR_AR", "ar")
+        env["VERILATOR_PYTHON3"] = os.environ.get(
+            "VERILATOR_PYTHON3", "python3"
+        )
+    if uvm_root:
+        env["UVM"] = uvm_root
 
-    cmd = ["make", "-C", "tests/uvm", "compile"]
+    cmd = ["make", "-C", "tests/uvm", "compile", f"SIMULATOR={simulator}"]
+
     try:
         subprocess.run(cmd, check=True, env=env)
         return True
-    except subprocess.CalledProcessError:
-        logging.error("Simulator build failed.")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Simulator build failed: {e}")
         return False
 
 
@@ -208,31 +309,49 @@ def build_spike() -> Optional[str]:
         subprocess.run(cmd, check=True)
         # Return the absolute path to the binary
         return os.path.abspath(
-            "bazel-bin/external/riscv_isa_sim/riscv_isa_sim/bin/spike")
-    except subprocess.CalledProcessError:
-        logging.error("Spike build failed.")
+            "bazel-bin/external/riscv_isa_sim/riscv_isa_sim/bin/spike"
+        )
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Spike build failed: {e}")
         return None
 
 
-def generate_spike_log(spike_bin: str,
-                       elf_path: str,
-                       log_path: str,
-                       entry_point: int = 0,
-                       timeout: int = 30) -> bool:
+def build_verilator() -> Optional[str]:
+    logging.info("Building Verilator Simulator...")
+    cmd = ["bazel", "build", "@verilator//:verilator_bin"]
+    try:
+        subprocess.run(cmd, check=True)
+        # Return the absolute path to the binary
+        return os.path.abspath("bazel-bin/external/verilator/verilator_bin")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Verilator build failed: {e}")
+        return None
+
+
+def generate_spike_log(
+    spike_bin: str,
+    elf_path: str,
+    log_path: str,
+    entry_point: int = 0,
+    timeout: int = 30
+) -> bool:
 
     logging.info(
-        f"Generating Spike log for {elf_path} (Entry: 0x{entry_point:x})...")
+        f"Generating Spike log for {elf_path} (Entry: 0x{entry_point:x})..."
+    )
     cmd = [
         spike_bin, f"-m{get_spike_memory_map_str()}", f"--isa={SPIKE_ISA}",
         "--misaligned", "-l", "--log-commits", f"--pc={entry_point}", elf_path
     ]
     try:
         with open(log_path, 'w') as f:
-            process = subprocess.Popen(cmd,
-                                       stdin=subprocess.DEVNULL,
-                                       stdout=f,
-                                       stderr=subprocess.STDOUT,
-                                       start_new_session=True)
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                start_new_session=True
+            )
             try:
                 process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -243,7 +362,8 @@ def generate_spike_log(spike_bin: str,
 
             if process.returncode != 0:
                 logging.error(
-                    f"Spike failed with exit code {process.returncode}")
+                    f"Spike failed with exit code {process.returncode}"
+                )
                 return False
         return True
     except Exception as e:
@@ -251,12 +371,17 @@ def generate_spike_log(spike_bin: str,
         return False
 
 
-def run_uvm(elf_path: str,
-            spike_log_path: Optional[str] = None,
-            target: Optional[str] = None,
-            mpact_root: str = "/tmp/copybara-mpact") -> Tuple[str, str, str]:
+def run_uvm(
+    elf_path: str,
+    spike_log_path: Optional[str] = None,
+    target: Optional[str] = None,
+    mpact_root: Optional[str] = None,
+    tohost_addr: Optional[int] = None
+) -> Tuple[str, str, str]:
 
     logging.info(f"Running UVM for {elf_path}...")
+    if not mpact_root:
+        mpact_root = resolve_default_mpact_root()
     if not os.path.exists(elf_path):
         # We don't want to deal too much with handling exceptions in
         # the run loop that calls this. We'll just log in the CSV and let
@@ -277,16 +402,18 @@ def run_uvm(elf_path: str,
         cmd.append(f"TEST_TIMEOUT_NS={timeout_ns}")
         logging.info(f"  Using custom timeout: {timeout_ns} ns")
 
+    if tohost_addr is not None:
+        cmd.append(f"EXTRA_PLUSARGS=+TOHOST_ADDR={tohost_addr:08x}")
+
     if spike_log_path:
         cmd.append(f"SPIKE_LOG={os.path.abspath(spike_log_path)}")
 
     max_retries = 3
     for attempt in range(1, max_retries + 1):
         try:
-            result = subprocess.run(cmd,
-                                    capture_output=True,
-                                    text=True,
-                                    env=env)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, env=env
+            )
             output = result.stdout + result.stderr
             if result.returncode != 0 and "1-800-VERILOG" in output:
                 if attempt < max_retries:
@@ -309,8 +436,10 @@ def run_uvm(elf_path: str,
         # Check for UVM errors/fatals regardless of return code
         # Match lines like: UVM_ERROR file.sv(123) @ 100: ... or UVM_FATAL @ 100: ...
         # Exclude summary lines like "UVM_ERROR : 0" or "Number of ... : 0"
-        uvm_err = re.search(r"^\s*(UVM_(?:FATAL|ERROR)(?!.*:\s+0\s*$).*)$",
-                            output, re.MULTILINE)
+        uvm_err = re.search(
+            r"^\s*(UVM_(?:FATAL|ERROR)(?!.*:\s+0\s*$).*)$", output,
+            re.MULTILINE
+        )
 
         if result.returncode != 0:
             status = "FAIL"
@@ -347,12 +476,11 @@ def get_riscv_test_artifacts() -> List[Tuple[str, str]]:
     target = "//third_party/riscv-tests:all_files"
     cmd = ["bazel", "cquery", target, "--output=files"]
     try:
-        result = subprocess.run(cmd,
-                                capture_output=True,
-                                text=True,
-                                check=True)
-    except subprocess.CalledProcessError:
-        logging.error("Failed to query riscv-tests outputs.")
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, check=True
+        )
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Failed to query riscv-tests outputs: {e}")
         return []
 
     artifacts = []
@@ -364,16 +492,14 @@ def get_riscv_test_artifacts() -> List[Tuple[str, str]]:
 
         for root, _, files in os.walk(d):
             for f in files:
-                if f.endswith('.dump'):
-                    continue
-                # heuristic: starts with rv32
-                if f.startswith('rv32'):
+                if is_riscv_test_file(f):
                     full_path = os.path.join(root, f)
                     # Construct a pseudo-target name
                     # e.g. //third_party/riscv-tests:rv32ui-p-add
                     name = f
                     pseudo_target = f"//third_party/riscv-tests:{name}"
-                    if pseudo_target in DENYLIST:
+                    if any(fnmatch.fnmatch(pseudo_target, pattern)
+                           for pattern in DENYLIST):
                         continue
                     artifacts.append((pseudo_target, full_path))
 
@@ -384,32 +510,50 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="Run UVM regression")
     parser.add_argument("--limit", type=int, help="Limit number of tests")
     parser.add_argument("--target", type=str, help="Run a single target")
-    parser.add_argument("--list-targets",
-                        action="store_true",
-                        help="List targets and exit")
-    parser.add_argument("--check-spike-timeouts",
-                        action="store_true",
-                        help="Run only Spike generation to identify timeouts")
-    parser.add_argument("--skip-riscv-tests",
-                        action="store_true",
-                        help="Skip riscv-tests")
+    parser.add_argument(
+        "--simulator",
+        type=str,
+        help="Defines simulator used for tests",
+        default="vcs"
+    )
+    parser.add_argument(
+        "--list-targets", action="store_true", help="List targets and exit"
+    )
+    parser.add_argument(
+        "--check-spike-timeouts",
+        action="store_true",
+        help="Run only Spike generation to identify timeouts"
+    )
+    parser.add_argument(
+        "--skip-riscv-tests", action="store_true", help="Skip riscv-tests"
+    )
     parser.add_argument(
         "--mpact-root",
         type=str,
-        help="Path to MPACT root directory (overrides CORALNPU_MPACT env var)")
+        help="Path to MPACT root directory (overrides CORALNPU_MPACT env var)"
+    )
     parser.add_argument(
         "--mpact-riscv-root",
         type=str,
         help=
         "Path to MPACT RISCV directory (overrides CORALNPU_MPACT_RISCV env var)"
     )
-    parser.add_argument("--mpact-commit",
-                        type=str,
-                        help="Git commit hash to checkout for MPACT root")
+    parser.add_argument(
+        "--mpact-commit",
+        type=str,
+        help="Git commit hash to checkout for MPACT root"
+    )
     parser.add_argument(
         "--mpact-riscv-commit",
         type=str,
-        help="Git commit hash to checkout for MPACT RISCV root")
+        help="Git commit hash to checkout for MPACT RISCV root"
+    )
+    parser.add_argument(
+        "--bazel-cache",
+        "--repository-cache",
+        type=str,
+        help="Path to Bazel repository cache directory"
+    )
     return parser.parse_args()
 
 
@@ -417,7 +561,8 @@ def checkout_git_commit(repo_root: str, commit: str):
     logging.info(f"Checking out {repo_root} at commit {commit}...")
     if not os.path.isdir(os.path.join(repo_root, ".git")):
         logging.error(
-            f"{repo_root} is not a git repository. Cannot checkout commit.")
+            f"{repo_root} is not a git repository. Cannot checkout commit."
+        )
         sys.exit(1)
 
     try:
@@ -427,15 +572,103 @@ def checkout_git_commit(repo_root: str, commit: str):
                        check=True)
     except subprocess.CalledProcessError as e:
         logging.error(
-            f"Failed to checkout commit {commit} in {repo_root}: {e}")
+            f"Failed to checkout commit {commit} in {repo_root}: {e}"
+        )
         sys.exit(1)
+
+
+def resolve_default_mpact_root() -> str:
+    # 1. Check if env var is already set
+    if "CORALNPU_MPACT" in os.environ:
+        return os.environ["CORALNPU_MPACT"]
+
+    # 2. If not set, dynamically resolve using Bazel
+    try:
+        logging.info(
+            "Dynamically resolving default @coralnpu_mpact path via Bazel..."
+        )
+        # Force Bazel to fetch the repository if needed
+        bazel_cache = os.environ.get("BAZEL_CACHE")
+        fetch_cmd = ["bazel", "build"]
+        if bazel_cache:
+            fetch_cmd.append(f"--repository_cache={bazel_cache}")
+        fetch_cmd.extend(["@coralnpu_mpact//:coralnpu_sim_users"])
+
+        # Run the build to force fetch
+        subprocess.check_output(fetch_cmd, stderr=subprocess.DEVNULL)
+
+        # Query bazel info output_base to get the dynamic cache location
+        output_base = subprocess.check_output(["bazel", "info", "output_base"]
+                                              ).decode("utf-8").strip()
+        resolved_path = os.path.join(output_base, "external", "coralnpu_mpact")
+        logging.info(f"Resolved default @coralnpu_mpact path: {resolved_path}")
+        return resolved_path
+    except Exception as e:
+        logging.critical(
+            f"Failed to dynamically resolve @coralnpu_mpact path via Bazel: {e}."
+        )
+        sys.exit(1)
+
+
+def resolve_verilator_root(verilator_bin: str) -> str:
+    # verilator_bin is at .../bazel-bin/external/verilator/verilator_bin
+    # runfiles are at .../bazel-bin/external/verilator/verilator_bin.runfiles/verilator
+    runfiles_dir = verilator_bin + ".runfiles"
+    verilator_root = os.path.join(runfiles_dir, "verilator")
+    if os.path.isdir(verilator_root):
+        return verilator_root
+    try:
+        logging.info("Dynamically resolving @verilator path via Bazel...")
+        output_base = subprocess.check_output(["bazel", "info", "output_base"]
+                                              ).decode("utf-8").strip()
+        default_path = os.path.join(output_base, "external", "verilator")
+        if os.path.isdir(default_path):
+            return default_path
+
+        external_dir = os.path.join(output_base, "external")
+        if os.path.isdir(external_dir):
+            for entry in os.listdir(external_dir):
+                if entry.startswith("verilator"):
+                    candidate = os.path.join(external_dir, entry)
+                    if os.path.isdir(candidate):
+                        return candidate
+        return default_path
+    except Exception as e:
+        logging.warning(f"Failed to resolve VERILATOR_ROOT dynamically: {e}")
+        return ""
+
+
+def resolve_uvm_root() -> str:
+    # 1. If UVM is already in environment, use it as override
+    if "UVM" in os.environ:
+        resolved_path = os.environ["UVM"]
+        logging.info(f"Using UVM override from environment: {resolved_path}")
+        return resolved_path
+
+    # 2. Try to resolve via Bazel query
+    try:
+        logging.info("Dynamically resolving @uvm path via Bazel...")
+        output = subprocess.check_output(
+            ["bazel", "query", "--output=location", "@uvm//:uvm_src"],
+            stderr=subprocess.DEVNULL
+        ).decode("utf-8").strip()
+        if ":" in output:
+            build_file_path = output.split(":")[0]
+            uvm_root = os.path.dirname(build_file_path)
+            if os.path.isdir(uvm_root):
+                logging.info(f"Resolved @uvm path: {uvm_root}")
+                return uvm_root
+    except Exception as e:
+        logging.warning(f"Failed to resolve @uvm path via Bazel: {e}")
+
+    return ""
 
 
 def get_mpact_configs(args) -> Tuple[str, Optional[str]]:
     if args.mpact_root:
         mpact_root = os.path.abspath(args.mpact_root)
     else:
-        mpact_root = os.environ.get("CORALNPU_MPACT", "/tmp/copybara-mpact")
+        mpact_root = resolve_default_mpact_root()
 
     mpact_riscv_root = None
     if args.mpact_riscv_root:
@@ -490,8 +723,9 @@ def prepare_tests(args, standard_targets: List[str]) -> List[Tuple[str, str]]:
     return tests_to_run
 
 
-def run_spike_timeout_check(tests_to_run: List[Tuple[str, str]],
-                            spike_bin: str, temp_elf_dir: str):
+def run_spike_timeout_check(
+    tests_to_run: List[Tuple[str, str]], spike_bin: str, temp_elf_dir: str
+):
     logging.info("--- Checking Spike Timeouts ---")
     failed_targets = []
     for i, (target, src_elf) in enumerate(tests_to_run):
@@ -499,7 +733,8 @@ def run_spike_timeout_check(tests_to_run: List[Tuple[str, str]],
 
         if src_elf and os.path.exists(src_elf):
             safe_name = target.replace('//', '').replace(':', '_').replace(
-                '/', '_') + ".elf"
+                '/', '_'
+            ) + ".elf"
             dest_elf = os.path.join(temp_elf_dir, safe_name)
             try:
                 if os.path.exists(dest_elf): os.remove(dest_elf)
@@ -508,17 +743,16 @@ def run_spike_timeout_check(tests_to_run: List[Tuple[str, str]],
                 os.chmod(
                     dest_elf, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
                     | stat.S_IRGRP
-                    | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+                    | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
+                )
 
                 entry_point = get_entry_point(dest_elf)
-                temp_spike_log = os.path.join(temp_elf_dir,
-                                              safe_name + ".spike.log")
+                temp_spike_log = os.path.join(
+                    temp_elf_dir, safe_name + ".spike.log"
+                )
 
                 if not generate_spike_log(
-                        spike_bin,
-                        dest_elf,
-                        temp_spike_log,
-                        entry_point,
+                        spike_bin, dest_elf, temp_spike_log, entry_point,
                         timeout=10):  # Short timeout for check
                     logging.error(f"  FAIL: {target}")
                     failed_targets.append(target)
@@ -537,11 +771,145 @@ def run_spike_timeout_check(tests_to_run: List[Tuple[str, str]],
     logging.info("]")
 
 
-def run_full_regression(tests_to_run: List[Tuple[str, str]], spike_bin: str,
-                        mpact_root: str, mpact_riscv_root: Optional[str],
-                        temp_elf_dir: str):
+def run_uvm_batch(
+    cmd: List[str], env: os._Environ, regression_log_path: str, logs_dir: str,
+    test_info_map: Dict
+):
+    current_target = None
+    current_test_log = None
+    current_reason = "None"
+    results = []
+    completed_targets = set()
+    with open(regression_log_path, 'a') as f_log:
+        process = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+
+        for line in process.stdout:
+            f_log.write(line)
+            if current_test_log: current_test_log.write(line)
+
+            # Detect start of test
+            start_match = re.search(r'--- STARTING TEST: (.*?) ---', line)
+            if start_match:
+                current_target = start_match.group(1)
+                logging.info(f"Running UVM for {current_target}...")
+
+                log_path = os.path.join(
+                    logs_dir, test_info_map[current_target]['safe_log']
+                )
+                if current_test_log: current_test_log.close()
+                current_test_log = open(log_path, 'w')
+                current_test_log.write(line)
+                current_reason = "None"
+                continue
+
+            # Parse for failure reasons
+            if current_target:
+                # Prioritize the first error found for the summary
+                err_match = re.search(
+                    r"^\s*(UVM_(?:FATAL|ERROR)(?!.*:\s+0\s*$).*)$", line,
+                    re.MULTILINE
+                )
+                if err_match:
+                    err_msg = err_match.group(1).strip()
+                    logging.error(f"    {err_msg}")
+                    if current_reason == "None":
+                        current_reason = err_msg.replace(',', ';')
+                else:
+                    # Match standard Verilog Error/Fatal/Assertion
+                    verilog_err = re.search(
+                        r"^(Error|Fatal|Runtime Error|Assertion failed):? (.*)$",
+                        line, re.MULTILINE
+                    )
+                    if verilog_err:
+                        err_msg = verilog_err.group(0).strip()
+                        logging.error(f"    {err_msg}")
+                        if current_reason == "None":
+                            current_reason = err_msg.replace(',', ';')
+
+                if "** UVM TEST PASSED **" in line:
+                    logging.info(f"  Result: PASS - {current_reason}")
+                    results.append({
+                        "Target":
+                        current_target,
+                        "Status":
+                        "PASS",
+                        "Reason":
+                        current_reason,
+                        "Log Path":
+                        os.path.join(
+                            "logs", test_info_map[current_target]['safe_log']
+                        )
+                    })
+                    completed_targets.add(current_target)
+                    current_test_log.close()
+                    current_test_log = None
+                    current_target = None
+                elif "** UVM TEST FAILED **" in line:
+                    logging.info(f"  Result: FAIL - {current_reason}")
+                    results.append({
+                        "Target":
+                        current_target,
+                        "Status":
+                        "FAIL",
+                        "Reason":
+                        current_reason,
+                        "Log Path":
+                        os.path.join(
+                            "logs", test_info_map[current_target]['safe_log']
+                        )
+                    })
+                    completed_targets.add(current_target)
+                    current_test_log.close()
+                    current_test_log = None
+                    current_target = None
+
+        process.wait()
+        if current_test_log: current_test_log.close()
+
+        # If process ended while a test was running, mark it as a crash
+        if current_target:
+            status = "FAIL"
+            if current_reason == "None":
+                current_reason = "Simulator exited early or crashed"
+            logging.error(f"  Result: {status} - {current_reason}")
+            results.append({
+                "Target":
+                current_target,
+                "Status":
+                status,
+                "Reason":
+                current_reason,
+                "Log Path":
+                os.path.join(
+                    "logs", test_info_map[current_target]['safe_log']
+                )
+            })
+            completed_targets.add(current_target)
+            current_target = None
+    return results, completed_targets
+
+
+def run_full_regression(
+    tests_to_run: List[Tuple[str, str]],
+    spike_bin: str,
+    mpact_root: str,
+    mpact_riscv_root: Optional[str],
+    temp_elf_dir: str,
+    simulator: str,
+    verilator_bin: Optional[str] = None,
+    verilator_root: Optional[str] = None,
+    uvm_root: Optional[str] = None
+):
     # Build the UVM simulator once
-    if not build_simulator(mpact_root, mpact_riscv_root):
+    if not build_simulator(mpact_root, simulator, mpact_riscv_root,
+                           verilator_bin, verilator_root, uvm_root):
+
         logging.critical("ERROR: Simulator build failed. Aborting regression.")
         sys.exit(1)
 
@@ -552,91 +920,131 @@ def run_full_regression(tests_to_run: List[Tuple[str, str]], spike_bin: str,
     os.makedirs(logs_dir, exist_ok=True)
     logging.info(f"Regression results will be stored in: {output_dir}")
 
-    results = []
-
+    # 1. Preparation: Copy ELFs and generate Spike logs
+    logging.info(f"Preparing {len(tests_to_run)} tests...")
+    test_info_map = {}  # target -> info dict
     for i, (target, src_elf) in enumerate(tests_to_run):
-        logging.info(f"[{i+1}/{len(tests_to_run)}] Processing {target}")
-
         if src_elf and os.path.exists(src_elf):
-            # Construct a safe filename
             safe_name = target.replace('//', '').replace(':', '_').replace(
-                '/', '_') + ".elf"
+                '/', '_'
+            ) + ".elf"
             dest_elf = os.path.join(temp_elf_dir, safe_name)
 
             try:
-                # Remove existing file to avoid permission errors
-                if os.path.exists(dest_elf):
-                    os.remove(dest_elf)
-
+                if os.path.exists(dest_elf): os.remove(dest_elf)
                 shutil.copy2(src_elf, dest_elf)
-                # Force write permissions
                 os.chmod(
-                    dest_elf,
-                    stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP
-                    | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+                    dest_elf, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+                    | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
+                )
 
-                elf_to_run = dest_elf
-                entry_point = get_entry_point(elf_to_run)
-
-                # Generate Spike Log
-                spike_log_path = None
-                if spike_bin:
-                    if target in SPIKE_DENYLIST:
-                        logging.info(
-                            f"  Skipping Spike generation for {target} (in SPIKE_DENYLIST)"
-                        )
-                    else:
-                        spike_log_name = safe_name + ".spike.log"
-                        temp_spike_log = os.path.join(temp_elf_dir,
-                                                      spike_log_name)
+                entry_point = get_entry_point(dest_elf)
+                spike_log_path = "NONE"
+                if spike_bin and target not in SPIKE_DENYLIST:
+                    spike_log_name = safe_name + ".spike.log"
+                    temp_spike_log = os.path.join(temp_elf_dir, spike_log_name)
+                    if os.path.exists(temp_spike_log):
+                        os.remove(temp_spike_log)
+                    cmd_spike = [
+                        spike_bin, f"-m{get_spike_memory_map_str()}",
+                        f"--isa={SPIKE_ISA}", "--misaligned", "-l",
+                        "--log-commits", f"--pc={entry_point}", dest_elf
+                    ]
+                    try:
+                        with open(os.devnull, 'w') as devnull:
+                            subprocess.run(
+                                cmd_spike,
+                                stdout=devnull,
+                                stderr=devnull,
+                                timeout=30
+                            )
                         if os.path.exists(temp_spike_log):
-                            os.remove(temp_spike_log)
+                            shutil.copy2(
+                                temp_spike_log,
+                                os.path.join(logs_dir, spike_log_name)
+                            )
+                            spike_log_path = os.path.abspath(temp_spike_log)
+                    except:
+                        pass
 
-                        spike_ok = generate_spike_log(spike_bin, elf_to_run,
-                                                      temp_spike_log,
-                                                      entry_point)
+                tohost_addr = get_tohost_addr(dest_elf)
+                if tohost_addr is None: tohost_addr = 0xFFFFFFFF
+                timeout = TIMEOUT_MAP.get(target, 100000)
 
-                        if os.path.exists(temp_spike_log):
-                            dest_name = spike_log_name if spike_ok else spike_log_name + ".fail"
-                            shutil.copy2(temp_spike_log,
-                                         os.path.join(logs_dir, dest_name))
-
-                            if spike_ok:
-                                spike_log_path = temp_spike_log
-                            else:
-                                logging.warning(
-                                    f"  WARNING: Spike log generation failed/timed out for {target}. Log saved to logs/{dest_name}"
-                                )
-
-                status, reason, log = run_uvm(elf_to_run,
-                                              spike_log_path,
-                                              target=target,
-                                              mpact_root=mpact_root)
+                test_info_map[target] = {
+                    "elf": os.path.abspath(dest_elf),
+                    "tohost": tohost_addr,
+                    "entry": entry_point,
+                    "timeout": timeout,
+                    "spike": spike_log_path,
+                    "safe_log": safe_name.replace('.elf', '.log')
+                }
             except Exception as e:
-                status = "FAIL"
-                reason = f"Copy/Setup failed: {e}"
-                log = str(e)
-        else:
-            status = "FAIL"
-            reason = "ELF source not found (Build failed?)"
-            log = ""
+                logging.error(f"Failed to prepare {target}: {e}")
 
-        log_filename = target.replace('//', '').replace(':', '_').replace(
-            '/', '_') + ".log"
-        log_path = os.path.join(logs_dir, log_filename)
+    # 2. Execute Simulation with Crash Recovery
+    results = []
+    completed_targets = set()
+    pending_targets = [t for t, _ in tests_to_run if t in test_info_map]
 
-        with open(log_path, "w") as f:
-            f.write(log)
+    env = os.environ.copy()
+    env["CORALNPU_MPACT"] = mpact_root
+    if verilator_bin:
+        env["VERILATOR"] = verilator_bin
+    if verilator_root:
+        env["VERILATOR_ROOT"] = verilator_root
+        env["VERILATOR_CXX"] = os.environ.get("VERILATOR_CXX", "g++")
+        env["VERILATOR_AR"] = os.environ.get("VERILATOR_AR", "ar")
+        env["VERILATOR_PYTHON3"] = os.environ.get(
+            "VERILATOR_PYTHON3", "python3"
+        )
+    if uvm_root:
+        env["UVM"] = uvm_root
 
-        results.append({
-            "Target": target,
-            "Status": status,
-            "Reason": reason,
-            "Log Path": os.path.join("logs", log_filename)  # Relative path
-        })
-        logging.info(f"  Result: {status} - {reason}")
+    regression_log_path = os.path.join(logs_dir, "regression.log")
 
-    # Write CSV
+    logging.info("--- Starting Batch UVM Regression ---")
+
+    while pending_targets:
+        # Create REGRESSION_LIST for current batch
+        batch_list_path = os.path.join(output_dir, "current_batch.txt")
+        with open(batch_list_path, 'w') as f_list:
+            for t in pending_targets:
+                info = test_info_map[t]
+                f_list.write(
+                    format_batch_entry(
+                        info['elf'], info['tohost'], info['entry'],
+                        info['timeout'], info['spike'], t
+                    )
+                )
+
+        cmd = [
+            "make", "-C", "tests/uvm", "run", "UVM_VERBOSITY=UVM_LOW",
+            "UVM_TESTNAME=coralnpu_regression_test", f"SIMULATOR={simulator}",
+            f"EXTRA_PLUSARGS=+REGRESSION_LIST={os.path.abspath(batch_list_path)}"
+        ]
+        try:
+            results_batch, completed_targets_batch = run_uvm_batch(
+                cmd, env, regression_log_path, logs_dir, test_info_map
+            )
+            results.extend(results_batch)
+            completed_targets = completed_targets.union(
+                completed_targets_batch
+            )
+        except Exception as e:
+            logging.error(f"Batch execution failed: {e}")
+            break  # Avoid infinite loop if prepare/launch fails fundamentally
+
+        # Update pending targets for next batch attempt
+        pending_targets = [
+            t for t in pending_targets if t not in completed_targets
+        ]
+        if pending_targets:
+            logging.warning(
+                f"Simulator crashed. Restarting for {len(pending_targets)} remaining tests..."
+            )
+
+    # 3. Finalization
     csv_file = os.path.join(output_dir, "uvm_results.csv")
     with open(csv_file, "w", newline='') as csvfile:
         fieldnames = ["Target", "Status", "Reason", "Log Path"]
@@ -646,16 +1054,28 @@ def run_full_regression(tests_to_run: List[Tuple[str, str]], spike_bin: str,
             writer.writerow(row)
 
     logging.info(f"Results written to {csv_file}")
-
-    # Create Zip Archive
-    zip_filename = f"{output_dir}"  # make_archive appends .zip
+    zip_filename = f"{output_dir}"
     logging.info(f"Creating archive {zip_filename}.zip...")
     shutil.make_archive(zip_filename, 'zip', output_dir)
     logging.info(f"Artifact created: {os.path.abspath(zip_filename + '.zip')}")
 
+    any_failed = any(r["Status"] != "PASS" for r in results)
+    if any_failed:
+        num_failed = sum(1 for r in results if r["Status"] != "PASS")
+        logging.error(f"Regression FAILED: {num_failed} tests failed.")
+        sys.exit(1)
+
+    logging.info("Regression PASSED.")
+
 
 def main():
     args = parse_arguments()
+    if args.bazel_cache:
+        os.environ["BAZEL_CACHE"] = os.path.abspath(args.bazel_cache)
+        logging.info(
+            f"Using Bazel repository cache: {os.environ['BAZEL_CACHE']}"
+        )
+
     mpact_root, mpact_riscv_root = get_mpact_configs(args)
 
     if args.mpact_commit:
@@ -692,12 +1112,28 @@ def main():
     with tempfile.TemporaryDirectory(prefix="uvm_reg_") as temp_elf_dir:
         logging.info(f"Using temp ELF directory: {temp_elf_dir}")
 
+        verilator_bin = None
+        verilator_root = None
+        uvm_root = resolve_uvm_root()
+        if args.simulator == "verilator":
+            verilator_bin = build_verilator()
+            if not verilator_bin or not os.path.exists(verilator_bin):
+                logging.critical(
+                    "ERROR: Verilator binary not found. Aborting."
+                )
+                sys.exit(1)
+            verilator_root = resolve_verilator_root(verilator_bin)
+            logging.info(f"Using VERILATOR_ROOT: {verilator_root}")
+
         if args.check_spike_timeouts:
             run_spike_timeout_check(tests_to_run, spike_bin, temp_elf_dir)
             return
 
-        run_full_regression(tests_to_run, spike_bin, mpact_root,
-                            mpact_riscv_root, temp_elf_dir)
+        run_full_regression(
+            tests_to_run, spike_bin, mpact_root, mpact_riscv_root,
+            temp_elf_dir, args.simulator, verilator_bin, verilator_root,
+            uvm_root
+        )
 
 
 if __name__ == "__main__":

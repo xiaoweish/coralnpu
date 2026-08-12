@@ -24,8 +24,8 @@ configure_make(
     args = ["-j16"],
     configure_options = [
         "--enable-commitlog",
-        "--with-isa=rv32imf_zve32x_zvl128b_zicsr_zifencei_zbb",
-        "--prefix=$(INSTALLDIR)",
+        "--with-isa=rv32imf_zve32f_zvl128b_zicsr_zifencei_zbb_zfbfmin_zvfbfa",
+        "CXX=clang++",
     ],
     lib_source = ":all_srcs",
     out_binaries = ["spike"],

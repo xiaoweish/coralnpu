@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//rules:coralnpu_v2.bzl", "coralnpu_v2_binary")
 load("//rules:coco_tb.bzl", "cocotb_test_suite", "verilator_cocotb_model")
+load("//rules:coralnpu_v2.bzl", "collect_coralnpu_elfs", "coralnpu_v2_binary")
 load("//rules:utils.bzl", "template_rule")
 load(
     "//tests/cocotb:build_defs.bzl",
@@ -30,7 +30,11 @@ template_rule(
     {
         "rvv_memcpy_test": {
             "srcs": ["memcpy_test.cc"],
-            "hdrs": ["//sw/opt:rvv_opt.h"]
+            "hdrs": ["//sw/opt:rvv_opt.h"],
+        },
+        "rvv_memset_test": {
+            "srcs": ["memset_test.cc"],
+            "hdrs": ["//sw/opt:rvv_opt.h"],
         },
     },
 )
@@ -39,11 +43,13 @@ filegroup(
     name = "rvv_opt_tests",
     srcs = [
         ":rvv_memcpy_test.elf",
+        ":rvv_memset_test.elf",
     ],
 )
 
 RUN_RVV_OPT_TESTS = [
     "rvv_memcpy_test",
+    "rvv_memset_test",
 ]
 
 cocotb_test_suite(
@@ -64,15 +70,23 @@ cocotb_test_suite(
             "//coralnpu_test_utils:sim_test_fixture",
             "@rules_python//python/runfiles",
         ],
-        "data": [":rvv_memcpy_test"],
+        "data": [
+            ":rvv_memcpy_test",
+            ":rvv_memset_test",
+        ],
         "size": "medium",
     },
     vcs_build_args = VCS_BUILD_ARGS,
-    vcs_data = [":rvv_memcpy_test.elf"] + [
-        "//tests/cocotb:coverage_exclude.cfg",
+    vcs_data = [
+        ":rvv_memcpy_test.elf",
+        ":rvv_memset_test.elf",
+    ] + [
+        "//hdl/verilog:dpi_files",
     ],
     vcs_defines = VCS_DEFINES,
     vcs_test_args = VCS_TEST_ARGS,
     vcs_verilog_sources = ["//hdl/chisel/src/coralnpu:rvv_core_mini_axi_cc_library_verilog"],
     verilator_model = "//tests/cocotb:rvv_core_mini_axi_model",
 )
+
+collect_coralnpu_elfs()

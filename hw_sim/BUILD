@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-load("//rules:coralnpu_v2.bzl", "coralnpu_v2_binary")
+load("//rules:coralnpu_v2.bzl", "collect_coralnpu_elfs", "coralnpu_v2_binary")
 
 cc_library(
     name = "hw_primitives",
@@ -35,9 +35,12 @@ cc_library(
         "mailbox.h",
     ],
     deps = [
+        ":coralnpu_simulator_headers",
         ":hw_primitives",
         "//hdl/chisel/src/coralnpu:core_mini_axi_cc_library_cc",
         "//hdl/chisel/src/coralnpu:rvv_core_mini_axi_cc_library_cc",
+        "//hdl/chisel/src/coralnpu:vme_core_mini_axi_cc_library_cc",
+        "//hdl/verilog:sram_backdoor",
     ],
 )
 
@@ -61,15 +64,17 @@ cc_library(
         "coralnpu_simulator.h",
         "mailbox.h",
     ],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "core_mini_axi_simulator",
     srcs = ["core_mini_axi_simulator.cc"],
     linkstatic = True,
+    visibility = ["//visibility:public"],
     deps = [
-        ":core_mini_axi_wrapper",
         ":coralnpu_simulator_headers",
+        ":core_mini_axi_wrapper",
     ],
     alwayslink = True,
 )
@@ -79,9 +84,23 @@ cc_library(
     srcs = ["core_mini_axi_simulator.cc"],
     copts = ["-DENABLE_RVV"],
     linkstatic = True,
+    visibility = ["//visibility:public"],
     deps = [
-        ":core_mini_axi_wrapper",
         ":coralnpu_simulator_headers",
+        ":core_mini_axi_wrapper",
+    ],
+    alwayslink = True,
+)
+
+cc_library(
+    name = "core_mini_axi_simulator_vme",
+    srcs = ["core_mini_axi_simulator.cc"],
+    copts = ["-DENABLE_VME"],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":coralnpu_simulator_headers",
+        ":core_mini_axi_wrapper",
     ],
     alwayslink = True,
 )
@@ -91,6 +110,7 @@ coralnpu_v2_binary(
     srcs = [
         "mailbox_example.cc",
     ],
+    visibility = ["//visibility:public"],
 )
 
 cc_binary(
@@ -121,3 +141,20 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [":core_mini_axi_simulator_rvv"],
 )
+
+cc_binary(
+    name = "libcoralnpu_simulator_vme.so",
+    linkshared = True,
+    visibility = ["//visibility:public"],
+    deps = [":core_mini_axi_simulator_vme"],
+)
+
+genrule(
+    name = "debug_common_cells_path",
+    srcs = ["@common_cells//:all_srcs"],
+    outs = ["debug_path_out.txt"],
+    cmd = "echo '--- external ---' > $@; ls -R external >> $@ 2>&1 || true; echo '--- current ---' >> $@; ls -R . >> $@ 2>&1 || true",
+    visibility = ["//visibility:public"],
+)
+
+collect_coralnpu_elfs()

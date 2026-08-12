@@ -12,7 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("//rules:coralnpu_v2.bzl", "collect_coralnpu_elfs", "coralnpu_v2_binary")
 load("//rules:utils.bzl", "template_rule")
+
+coralnpu_v2_binary(
+    name = "htif_semihosting_test",
+    srcs = ["coralnpu/htif_semihosting_test.cc"],
+    dtcm_size_kbytes = 1024,
+    itcm_size_kbytes = 1024,
+    semihosting = True,
+    visibility = ["//visibility:public"],
+)
 
 cc_library(
     name = "elf",
@@ -50,9 +60,9 @@ cc_library(
 cc_library(
     name = "coralnpu_if",
     hdrs = [
+        "coralnpu/coralnpu_cfg.h",
         "coralnpu/core_if.h",
         "coralnpu/debug_if.h",
-        "coralnpu/coralnpu_cfg.h",
         "coralnpu/memory_if.h",
     ],
     defines = ["CORALNPU_SIMD=256"],
@@ -86,6 +96,7 @@ CORE_MINI_AXI_TB_CC_LIBRARY_COMMON_DEPS = [
     ":elf",
     ":sim_libs",
     ":util",
+    "//hdl/verilog:sram_backdoor",
     "//tests/systemc:Xbar",
     "//tests/systemc:instruction_trace",
     "@accellera_systemc//:systemc",
@@ -121,6 +132,30 @@ template_rule(
                 "VERILATOR_MODEL=VCoreMiniVerificationAxi",
             ],
         },
+        "core_mini_highmem_axi_tb": {
+            "srcs": [
+                "@coralnpu_hw//hdl/chisel/src/coralnpu:VCoreMiniHighmemAxi_parameters.h",
+            ] + CORE_MINI_AXI_TB_CC_LIBRARY_COMMON_SRCS,
+            "deps": [
+                "//hdl/chisel/src/coralnpu:core_mini_highmem_axi_cc_library",
+            ] + CORE_MINI_AXI_TB_CC_LIBRARY_COMMON_DEPS,
+            "defines": [
+                "VERILATOR_MODEL=VCoreMiniHighmemAxi",
+                "HIGHMEM_RTL",
+            ],
+        },
+        "core_mini_itcm512kb_dtcm512kb_axi_tb": {
+            "srcs": [
+                "@coralnpu_hw//hdl/chisel/src/coralnpu:VCoreMini_ITCM512KB_DTCM512KBAxi_parameters.h",
+            ] + CORE_MINI_AXI_TB_CC_LIBRARY_COMMON_SRCS,
+            "deps": [
+                "//hdl/chisel/src/coralnpu:core_mini_itcm512kb_dtcm512kb_axi_cc_library",
+            ] + CORE_MINI_AXI_TB_CC_LIBRARY_COMMON_DEPS,
+            "defines": [
+                "VERILATOR_MODEL=VCoreMini_ITCM512KB_DTCM512KBAxi",
+                "HIGHMEM_RTL",
+            ],
+        },
         "rvv_core_mini_axi_tb": {
             "srcs": [
                 "@coralnpu_hw//hdl/chisel/src/coralnpu:VRvvCoreMiniAxi_parameters.h",
@@ -130,6 +165,30 @@ template_rule(
             ] + CORE_MINI_AXI_TB_CC_LIBRARY_COMMON_DEPS,
             "defines": [
                 "VERILATOR_MODEL=VRvvCoreMiniAxi",
+            ],
+        },
+        "rvv_core_mini_highmem_axi_tb": {
+            "srcs": [
+                "@coralnpu_hw//hdl/chisel/src/coralnpu:VRvvCoreMiniHighmemAxi_parameters.h",
+            ] + CORE_MINI_AXI_TB_CC_LIBRARY_COMMON_SRCS,
+            "deps": [
+                "//hdl/chisel/src/coralnpu:rvv_core_mini_highmem_axi_cc_library",
+            ] + CORE_MINI_AXI_TB_CC_LIBRARY_COMMON_DEPS,
+            "defines": [
+                "VERILATOR_MODEL=VRvvCoreMiniHighmemAxi",
+                "HIGHMEM_RTL",
+            ],
+        },
+        "rvv_core_mini_itcm512kb_dtcm512kb_axi_tb": {
+            "srcs": [
+                "@coralnpu_hw//hdl/chisel/src/coralnpu:VRvvCoreMini_ITCM512KB_DTCM512KBAxi_parameters.h",
+            ] + CORE_MINI_AXI_TB_CC_LIBRARY_COMMON_SRCS,
+            "deps": [
+                "//hdl/chisel/src/coralnpu:rvv_core_mini_itcm512kb_dtcm512kb_axi_cc_library",
+            ] + CORE_MINI_AXI_TB_CC_LIBRARY_COMMON_DEPS,
+            "defines": [
+                "VERILATOR_MODEL=VRvvCoreMini_ITCM512KB_DTCM512KBAxi",
+                "HIGHMEM_RTL",
             ],
         },
         "rvv_core_mini_verification_axi_tb": {
@@ -170,9 +229,29 @@ template_rule(
                 ":core_mini_verification_axi_tb",
             ] + CORE_MINI_AXI_SIM_CC_BINARY_COMMON_DEPS,
         },
+        "core_mini_highmem_axi_sim": {
+            "deps": [
+                ":core_mini_highmem_axi_tb",
+            ] + CORE_MINI_AXI_SIM_CC_BINARY_COMMON_DEPS,
+        },
+        "core_mini_itcm512kb_dtcm512kb_axi_sim": {
+            "deps": [
+                ":core_mini_itcm512kb_dtcm512kb_axi_tb",
+            ] + CORE_MINI_AXI_SIM_CC_BINARY_COMMON_DEPS,
+        },
         "rvv_core_mini_axi_sim": {
             "deps": [
                 ":rvv_core_mini_axi_tb",
+            ] + CORE_MINI_AXI_SIM_CC_BINARY_COMMON_DEPS,
+        },
+        "rvv_core_mini_highmem_axi_sim": {
+            "deps": [
+                ":rvv_core_mini_highmem_axi_tb",
+            ] + CORE_MINI_AXI_SIM_CC_BINARY_COMMON_DEPS,
+        },
+        "rvv_core_mini_itcm512kb_dtcm512kb_axi_sim": {
+            "deps": [
+                ":rvv_core_mini_itcm512kb_dtcm512kb_axi_tb",
             ] + CORE_MINI_AXI_SIM_CC_BINARY_COMMON_DEPS,
         },
         "rvv_core_mini_verification_axi_sim": {
@@ -193,6 +272,20 @@ cc_test(
     ],
     deps = [
         ":core_mini_axi_tb",
+        "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/log:initialize",
+    ],
+)
+
+cc_test(
+    name = "backdoor_load_test",
+    srcs = [
+        "coralnpu/backdoor_load_test.cc",
+    ],
+    deps = [
+        ":core_mini_axi_tb",
+        "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/log:initialize",
     ],
 )
 
@@ -230,66 +323,6 @@ cc_binary(
         ":sim_libs",
         ":util",
         "//hdl/chisel/src/coralnpu:core_mini_cc_library",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/flags:parse",
-        "@com_google_absl//absl/flags:usage",
-    ],
-)
-
-cc_binary(
-    name = "coralnpu_tb",
-    srcs = [
-        "matcha/coralnpu_if.h",
-        "matcha/coralnpu_tb.cc",
-        "@coralnpu_hw//hdl/chisel/src/matcha:VCoralNPU_parameters.h",
-    ],
-    defines = [
-        "VERILATOR_MODEL=VCoralNPU",
-    ],
-    deps = [
-        ":coralnpu_if",
-        ":sim_libs",
-        "//hdl/chisel/src/matcha:coralnpu_cc_library",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/flags:parse",
-        "@com_google_absl//absl/flags:usage",
-    ],
-)
-
-cc_binary(
-    name = "coralnpu_scalar_tb",
-    srcs = [
-        "matcha/coralnpu_if.h",
-        "matcha/coralnpu_tb.cc",
-        "@coralnpu_hw//hdl/chisel/src/matcha:VCoralNPUScalar_parameters.h",
-    ],
-    defines = [
-        "VERILATOR_MODEL=VCoralNPUScalar",
-    ],
-    deps = [
-        ":coralnpu_if",
-        ":sim_libs",
-        "//hdl/chisel/src/matcha:coralnpu_scalar_cc_library",
-        "@com_google_absl//absl/flags:flag",
-        "@com_google_absl//absl/flags:parse",
-        "@com_google_absl//absl/flags:usage",
-    ],
-)
-
-cc_binary(
-    name = "coralnpu_mini_tb",
-    srcs = [
-        "matcha/coralnpu_if.h",
-        "matcha/coralnpu_tb.cc",
-        "@coralnpu_hw//hdl/chisel/src/matcha:VCoralNPUMini_parameters.h",
-    ],
-    defines = [
-        "VERILATOR_MODEL=VCoralNPUMini",
-    ],
-    deps = [
-        "coralnpu_if",
-        ":sim_libs",
-        "//hdl/chisel/src/matcha:coralnpu_mini_cc_library",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",
         "@com_google_absl//absl/flags:usage",
@@ -347,3 +380,5 @@ cc_test(
         "//hdl/chisel/src/coralnpu:l1icache_cc_library",
     ],
 )
+
+collect_coralnpu_elfs()

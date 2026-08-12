@@ -26,7 +26,7 @@ pybind_extension(
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
-        "@coralnpu_mpact//sim:coralnpu_v2_simulator",
+        "@coralnpu_mpact//sim:coralnpu_simulator",
         "@pybind11_abseil//pybind11_abseil:status_casters",
     ],
 )
@@ -55,7 +55,10 @@ py_library(
 py_test(
     name = "coralnpu_v2_sim_test",
     srcs = ["coralnpu_v2_sim_test.py"],
-    data = ["//tests/cocotb/rvv/arithmetics:rvv_add_int8_m1"],
+    data = [
+        "//tests/cocotb/rvv/arithmetics:rvv_add_int8_m1",
+        "//tests/verilator_sim:htif_semihosting_test",
+    ],
     deps = [
         ":coralnpu_v2_sim_utils_lib",
         "@bazel_tools//tools/python/runfiles",
